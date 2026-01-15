@@ -1,0 +1,19 @@
+# 가상환경
+.venv/
+venv/
+.vscode/
+
+# 환경변수 (비밀번호 포함됨 - 절대 올리지 마세요!)
+.env
+
+# Airflow 로그 및 임시 파일
+logs/
+plugins/__pycache__/
+dags/__pycache__/
+__pycache__/
+*.pyc
+
+# OS 파일
+.DS_Store
+# Docker 빌드 컨텍스트 제외 (필요 시)
+# db-data/
