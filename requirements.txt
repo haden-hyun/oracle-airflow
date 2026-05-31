@@ -3,3 +3,4 @@ requests
 pandas
 pyupbit
 numpy
+playwright
