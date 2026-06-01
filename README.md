@@ -123,12 +123,4 @@ Playwright로 fundguide.net을 크롤링해 연금저축 펀드 기준가를 `ma
 
 DAG에서 공통으로 사용하는 비즈니스 로직 모음입니다. `plugins/` 하위에 위치하므로 별도 설치 없이 DAG에서 직접 import할 수 있습니다.
 
-| 모듈 | 역할 |
-|---|---|
-| `clients/kis_client.py` | KIS REST API 래퍼 (환율, 잔고, 토큰) |
-| `clients/upbit_client.py` | Upbit REST API 래퍼 (잔고, 시세) |
-| `crawler/fund_crawler.py` | Playwright 기반 펀드 기준가 크롤러 |
-| `managers/token_manager.py` | 토큰 파일 읽기·쓰기 |
-| `managers/db_manager.py` | 펀드 기준가 DB 조회 헬퍼 |
-| `transformers/kis_transformer.py` | KIS 원시 데이터 → DataFrame 변환 |
-| `transformers/upbit_transformer.py` | Upbit 원시 데이터 → DataFrame 변환 |
+세부 사양은 [plugins/asset_flow/README.md](plugins/asset_flow/README.md)를 참고하세요.
