@@ -1,7 +1,15 @@
 # asset_flow 라이브러리
 
-DAG에서 공통으로 사용하는 비즈니스 로직 모음입니다.
-`plugins/` 하위에 위치하므로 별도 설치 없이 DAG에서 직접 import할 수 있습니다.
+**프로젝트**: asset-flow (개인 자산 수집 파이프라인)  
+**위치**: `plugins/asset_flow/`
+
+KIS(한국투자증권), Upbit API 호출 및 데이터 변환에 필요한 비즈니스 로직을 모듈화한 라이브러리입니다.
+`plugins/` 하위에 위치하므로 Airflow DAG에서 별도 설치 없이 직접 import할 수 있습니다.
+
+```python
+from asset_flow.clients.kis_client import KISApiClient
+from asset_flow.transformers.kis_transformer import transform_domestic_balance
+```
 
 ## 모듈 구조
 
@@ -72,11 +80,14 @@ from asset_flow.clients.upbit_client import UpbitApiClient
 upbit = UpbitApiClient(token=tokens['UPBIT'])
 ```
 
-| 메서드 | 설명 |
-|---|---|
-| `get_balance()` | 보유 자산 조회 (KRW 포함 전 종목) |
-| `get_market_codes()` | 마켓 코드 조회 (한글명 매핑용) |
-| `get_current_prices(markets)` | 현재가 조회 (`['KRW-BTC', ...]` 형태 입력) |
+| 메서드 | 엔드포인트 | 설명 |
+|---|---|---|
+| `get_balance()` | `/v1/accounts` | 보유 자산 조회 (KRW 포함 전 종목) |
+| `get_market_codes()` | `/v1/market/all` | 마켓 코드 및 한글명 목록 조회 |
+| `get_daily_candles(markets, to_date)` | `/v1/candles/days` | 일 캔들 종가 조회 — T-1 종가 수집용. `to_date`에 T일(base_date)을 전달하면 T-1 종가 반환 |
+
+> `get_daily_candles`의 `to_date`는 Upbit API `to` 파라미터(해당 시각 이전 기준)에 대응합니다.  
+> DAG에서 `base_date`(T일, `{base_date}T00:00:00`)를 전달해야 T-1 종가를 정확히 수집합니다.
 
 ---
 
@@ -91,7 +102,7 @@ KIS API 호출에 필요한 모든 상수를 클래스 변수로 관리합니다
 | `BASE_URL` | `https://openapi.koreainvestment.com:9443` |
 | `PATHS` | 엔드포인트 경로 딕셔너리 (`token`, `domestic_balance`, `overseas_balance`, `account_balance`, `exchange_rate`) |
 | `TR_IDS` | 거래 ID 딕셔너리 |
-| `PARAMS` | 고정 쿼리 파라미터 딕셔너리 (계좌별 공통 파라미터) |
+| `PARAMS` | 고정 쿼리 파라미터 딕셔너리 — `account_balance`의 `BSPR_BF_DT_APLY_YN="Y"`로 전일 기준가 적용 |
 | `EXCHANGE_RATE_PRODUCT_CODES` | 환율 조회 상품코드 리스트 (`USD, JPY, GBP, EUR`) |
 | `ACCOUNT_BALANCE_ROW_NAMES` | 투자계좌자산현황 응답의 행 순서 목록 (API가 인덱스 없이 순서로 반환하므로 인덱스 접근 시 참고용) |
 
@@ -187,4 +198,6 @@ KIS·Upbit API 토큰을 날짜 기반 파일(`data/tokens/YYYYMMDD_token.json`)
 
 | 함수 | 설명 |
 |---|---|
-| `transform_upbit_balance(balance_raw, market_code_raw, price_raw, standard_date, account_code, account_name)` | 잔고·마켓코드·현재가 3개 응답을 병합해 암호화폐 잔고 DataFrame 생성. `asset_type="CRYPTO"` |
+| `transform_upbit_balance(balance_raw, market_code_raw, price_raw, standard_date, account_code, account_name)` | 잔고·마켓코드·일 캔들 종가 3개 응답을 병합해 암호화폐 잔고 DataFrame 생성. `asset_type="CRYPTO"` |
+
+> `price_raw`는 `/v1/candles/days` 응답(T-1 종가)을 사용합니다. `trade_price` 필드명이 ticker 응답과 동일하므로 transformer 변경 없이 호환됩니다.

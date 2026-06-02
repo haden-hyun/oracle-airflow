@@ -1,10 +1,14 @@
 """
-역할: 한국투자증권 API 전용 클라이언트
-의존성: base_client, constants
-책임:
-    - KIS API 엔드포인트별 요청 메서드 제공
-    - KIS 인증 헤더 생성
-    - 원시 JSON 응답 반환 (변환 로직 없음)
+한국투자증권(KIS) OpenAPI 전용 클라이언트
+
+BaseApiClient를 상속하여 KIS API 인증 헤더 생성과 각 TR_ID별 요청 메서드를 제공한다.
+응답은 원시 JSON을 그대로 반환하며, 데이터 변환은 kis_transformer에서 담당한다.
+
+제공 메서드:
+    - get_overseas_balance(): 해외주식 잔고 (TR: TTTS3012R)
+    - get_domestic_balance(): 국내주식 잔고 (TR: TTTC8434R)
+    - get_account_balance(): 투자계좌자산현황 — 연금저축·CMA 용도 (TR: CTRP6548R)
+    - get_exchange_rate(): 환율 기간별 시세 (TR: FHKST03030100)
 """
 
 from typing import Dict, List
@@ -25,7 +29,7 @@ class KISApiClient(BaseApiClient):
         self.config = config
 
     def _build_headers(self, tr_id: str) -> Dict[str, str]:
-        """KIS API 헤더 생성"""
+        """KIS API 공통 인증 헤더 생성 (appKey, appSecret, tr_id 포함)"""
         return {
             "content-type": "application/json",
             "authorization": f"Bearer {self.token}",
@@ -54,7 +58,12 @@ class KISApiClient(BaseApiClient):
         return response.json()
 
     def get_domestic_balance(self) -> Dict:
-        """국내주식 잔고 조회"""
+        """
+        국내주식 잔고 조회 (TR: TTTC8434R)
+
+        Returns:
+            dict: 원시 JSON 응답 — output1 리스트에 종목별 잔고 포함
+        """
         url = self._build_url(KIS.PATHS["domestic_balance"])
         headers = self._build_headers(KIS.TR_IDS["domestic_balance"])
 
@@ -68,7 +77,16 @@ class KISApiClient(BaseApiClient):
         return response.json()
 
     def get_account_balance(self) -> Dict:
-        """투자계좌자산현황 조회"""
+        """
+        투자계좌자산현황 조회 (TR: CTRP6548R)
+
+        output1은 자산 유형별 고정 순서 행 배열로 반환된다.
+        행 인덱스 의미는 KIS.ACCOUNT_BALANCE_ROW_NAMES 참조.
+        BSPR_BF_DT_APLY_YN="Y" 적용으로 전일 기준가 기반 평가금액 반환.
+
+        Returns:
+            dict: 원시 JSON 응답 — output1[1]=펀드/MMW, output1[14]=외화단기사채(CMA)
+        """
         url = self._build_url(KIS.PATHS["account_balance"])
         headers = self._build_headers(KIS.TR_IDS["account_balance"])
 

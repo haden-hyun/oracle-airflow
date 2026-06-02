@@ -1,10 +1,14 @@
 """
-역할: 모든 API 클라이언트의 공통 기능 제공
-의존성: requests
+모든 API 클라이언트의 공통 기반 클래스
+
+HTTP 요청 실행, 에러 처리, URL 조립 등 API 클라이언트 공통 동작을 추상화한다.
+KISApiClient, UpbitApiClient 는 이 클래스를 상속하여 각 API별 인증 헤더와
+엔드포인트 메서드를 구현한다.
+
 책임:
-  - HTTP 요청 실행 및 에러 처리
-  - 공통 헤더 생성 로직
-  - 재시도 로직 (선택)
+    - safe_request(): HTTP 요청 실행 및 4xx/5xx 에러 로깅 후 예외 재전파
+    - _build_url(): base_url + path 조합
+    - _build_headers(): 추상 메서드 — 하위 클래스에서 인증 헤더를 구현
 """
 
 from abc import ABC, abstractmethod
@@ -58,5 +62,5 @@ class BaseApiClient(ABC):
             raise
 
     def _build_url(self, path: str) -> str:
-        """전체 URL 생성"""
+        """base_url과 경로를 결합하여 완전한 요청 URL 반환"""
         return f"{self.base_url}{path}"

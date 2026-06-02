@@ -1,3 +1,11 @@
+"""
+데이터베이스 접근 헬퍼
+
+PostgreSQL 연결 엔진 생성과 업무 도메인별 조회 함수를 제공한다.
+Airflow 내부에서는 PostgresHook을 통해 엔진을 주입받으며,
+이 모듈의 함수들은 로컬 실행 또는 단위 테스트에서도 직접 사용할 수 있다.
+"""
+
 from typing import Optional, Tuple
 
 from sqlalchemy import create_engine, text
@@ -5,6 +13,15 @@ from sqlalchemy.engine import Engine
 
 
 def create_db_engine(db_info: dict) -> Engine:
+    """
+    PostgreSQL 연결 엔진 생성
+
+    Args:
+        db_info: {user, password, host, port, database} 접속 정보 딕셔너리
+
+    Returns:
+        SQLAlchemy Engine 객체
+    """
     url = (
         f"postgresql://{db_info['user']}:{db_info['password']}"
         f"@{db_info['host']}:{db_info['port']}/{db_info['database']}"

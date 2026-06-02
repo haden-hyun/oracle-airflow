@@ -1,3 +1,15 @@
+"""
+KIS 및 Upbit API 토큰 발급·저장·조회 관리
+
+매일 최초 1회 토큰을 발급하여 날짜별 JSON 파일(data/tokens/YYYYMMDD_token.json)에 저장하고,
+이후 호출 시 파일에서 읽어 반환한다. 당일 파일이 이미 존재하면 재발급하지 않는다.
+과거 날짜의 토큰 파일은 자동으로 삭제한다.
+
+사용처:
+    - make_token_dag: 매일 06:50 TokenGenerator() 호출로 사전 발급
+    - 각 수집 DAG 태스크: GetTokens() 호출로 당일 토큰 조회
+"""
+
 import os
 import json
 import uuid
@@ -10,6 +22,7 @@ from ..config.kis import KIS
 
 
 class TokenManager:
+    """KIS(한국투자증권) 및 Upbit 액세스 토큰의 발급·파일 저장·조회를 담당하는 매니저"""
     def __init__(self):
         # 1. 한국 시간(KST) 기준 날짜 설정 (새벽 실행 시 UTC 문제 방지)
         kst = timezone("Asia/Seoul")
@@ -21,7 +34,7 @@ class TokenManager:
         self.TOKEN_FILE_PATH = os.path.join(self.DATA_DIR, self.TOKEN_FILE_NAME)
 
     def _ensure_dir(self):
-        """오늘 날짜 폴더 생성 및 과거 폴더 정리"""
+        """토큰 저장 디렉토리가 없으면 생성"""
         if not os.path.exists(self.DATA_DIR):
             os.makedirs(self.DATA_DIR, exist_ok=True)
 
@@ -88,7 +101,12 @@ class TokenManager:
             raise Exception(f"UPBIT 토큰 발급 실패: {e}")
 
     def TokenGenerator(self):
-        """토큰 발급 및 저장"""
+        """
+        KIS/Upbit 토큰을 발급하고 날짜별 JSON 파일로 저장
+
+        당일 토큰 파일이 이미 존재하면 즉시 반환(중복 발급 방지).
+        파일이 없으면 과거 파일 정리 → 전 계좌 토큰 발급 → 파일 저장 순으로 실행.
+        """
         if os.path.exists(self.TOKEN_FILE_PATH):
             return
         # 1. 토큰 폴더 확인 및 청소
@@ -115,7 +133,14 @@ class TokenManager:
         return print(f"{self.TOKEN_FILE_NAME} 토큰 파일이 저장되었습니다.")
 
     def GetTokens(self):
-        """토큰 조회 (없으면 생성)"""
+        """
+        당일 토큰 딕셔너리 반환
+
+        파일이 없으면 TokenGenerator()를 호출하여 먼저 발급한 뒤 반환한다.
+
+        Returns:
+            dict: {KIS_STOCK, KIS_ISA, KIS_PENSION, KIS_IRP, UPBIT} 액세스 토큰 맵
+        """
         if not os.path.exists(self.TOKEN_FILE_PATH):
             self.TokenGenerator()
 

@@ -1,3 +1,18 @@
+"""
+펀드 기준가 크롤링 및 DB 적재 DAG
+
+keywords: fund, NAV, 기준가, fundguide, Playwright, crawling, market data, PostgreSQL
+
+매일 06:55 KST에 실행되어 fundguide.net에서 연금저축 펀드의 전일(T-1) 기준가(NAV)를
+Playwright 헤드리스 브라우저로 크롤링하고 market.fund_price_daily 테이블에 적재한다.
+수집된 기준가는 fetch_asset_daily DAG의 연금저축 펀드 좌수 역산 계산에 사용된다.
+
+스케줄: 매일 06:55 KST (cron: '55 6 * * *')
+의존성: 없음 (make_token 불필요 — 크롤러는 API 인증 없이 동작)
+후행 DAG: fetch_asset_daily (ExternalTaskSensor로 연결)
+적재 테이블: market.fund_price_daily
+"""
+
 from airflow.decorators import task, dag
 from airflow.models.param import Param
 from airflow.operators.python import get_current_context
@@ -25,6 +40,7 @@ default_args = {
     schedule='55 6 * * *',
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,
+    tags=['market', 'fund', 'NAV', 'crawling', 'daily', 'ingestion'],
     params={
         'fund_price': Param({
             'schema': 'market',
@@ -40,6 +56,12 @@ def fetch_fund_price_daily_dag():
 
     @task(task_id='get_standard_date')
     def get_standard_date() -> str:
+        """
+        Airflow data_interval_end 기준 전일 날짜(T-1) 반환
+
+        Returns:
+            standard_date: 기준일자 문자열 (YYYY-MM-DD)
+        """
         context = get_current_context()
         utc_end = context.get('data_interval_end')
         kst_end = utc_end.in_timezone("Asia/Seoul")
@@ -49,6 +71,19 @@ def fetch_fund_price_daily_dag():
 
     @task(task_id='crawl_fund_prices')
     def crawl_fund_prices(standard_date: str) -> list:
+        """
+        fundguide.net에서 펀드 기준가 크롤링
+
+        Airflow param fund_codes에 정의된 펀드 표준코드 목록을 순회하며
+        Playwright 헤드리스 브라우저로 기준가를 수집한다.
+        nav가 None이거나 타임아웃이 발생한 코드는 건너뛴다.
+
+        Args:
+            standard_date: 기준일자 (YYYY-MM-DD, T-1) — DB 레코드 standard_date 필드에 저장
+
+        Returns:
+            list: fund_price_daily 스키마 dict 레코드 리스트 [{standard_date, product_code, product_name, standard_price}]
+        """
         from asset_flow.crawler.fund_crawler import fetch_fund_quote, to_fund_price_record
         from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -88,6 +123,15 @@ def fetch_fund_price_daily_dag():
 
     @task(task_id='upload_fund_prices')
     def upload_fund_prices(standard_date: str, records: list) -> None:
+        """
+        크롤링된 펀드 기준가 레코드를 market.fund_price_daily 테이블에 적재
+
+        기존 standard_date 행을 먼저 삭제(DELETE)한 뒤 신규 삽입(INSERT)하여 멱등성을 보장한다.
+
+        Args:
+            standard_date: 기준일자 (YYYY-MM-DD) — DELETE 조건 및 로그 출력용
+            records: crawl_fund_prices() 결과 레코드 리스트
+        """
         if not records:
             print("적재할 펀드 데이터가 없습니다.")
             return

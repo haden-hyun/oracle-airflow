@@ -1,3 +1,17 @@
+"""
+출력 스키마 및 API 필드명 매핑 정의
+
+각 API 응답의 원시 필드명을 도메인 필드명으로 변환하는 RENAME 딕셔너리와,
+DB 적재 테이블 컬럼 순서를 결정하는 TypedDict / 컬럼 리스트를 관리한다.
+
+구성:
+    - KIS_RENAME: KIS API 응답 필드 → 도메인 필드 매핑 (account_balance, exchange_rate, domestic_balance, overseas_balance)
+    - UPBIT_RENAME: Upbit API 응답 필드 → 도메인 필드 매핑
+    - BalanceRecord: 자산 잔고 통합 스키마 (account.asset_daily 테이블 기준)
+    - ExchangeRateRecord: 환율 스키마 (market.exchange_rate_daily 테이블 기준)
+    - BALANCE_COLUMNS / EXCHANGE_RATE_COLUMNS: pandas DataFrame 컬럼 선택용 리스트
+"""
+
 from typing import Dict, List, TypedDict
 
 # ── API 필드명 → 도메인 필드명 변환 매핑 ─────────────────────────────────────
