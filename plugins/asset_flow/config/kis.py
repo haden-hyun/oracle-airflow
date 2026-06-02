@@ -1,3 +1,14 @@
+"""
+한국투자증권(KIS) OpenAPI 설정 모음
+
+API 엔드포인트 경로(PATHS), TR_ID, 고정 쿼리 파라미터(PARAMS),
+환율 조회용 상품코드, 계좌잔고 응답의 행 순서(ACCOUNT_BALANCE_ROW_NAMES)를 중앙 관리한다.
+
+참고:
+    - KIS OpenAPI 포털: https://apiportal.koreainvestment.com
+    - 인증 방식: OAuth2 (Bearer token, 1일 유효)
+"""
+
 from typing import Dict, List
 
 
@@ -29,7 +40,7 @@ class KIS:
     PARAMS: Dict[str, dict] = {
         "account_balance": {
             "INQR_DVSN_1": "",
-            "BSPR_BF_DT_APLY_YN": "",
+            "BSPR_BF_DT_APLY_YN": "Y",  # 전일 기준가 적용 (스냅샷 기준일 일치)
         },
         "exchange_rate": {
             "FID_COND_MRKT_DIV_CODE": "X",
