@@ -7,6 +7,7 @@ KIS/Upbit API 응답값에 포함된 쉼표(,), 빈 문자열, None 등을
 """
 
 import pandas as pd
+import numpy as np
 from typing import List
 
 _NUMERIC_COLS: List[str] = [
@@ -25,7 +26,7 @@ def normalize_numeric(df: pd.DataFrame) -> pd.DataFrame:
     """
     숫자형 컬럼 일괄 정규화
 
-    _NUMERIC_COLS에 정의된 컬럼에 대해 쉼표 제거 → float 변환 → NaN을 0으로 채운다.
+    _NUMERIC_COLS에 정의된 컬럼에 대해 쉼표 제거 → float 변환 → inf/-inf 및 NaN을 0으로 채운다.
     컬럼이 DataFrame에 없으면 건너뛴다.
 
     Args:
@@ -39,6 +40,7 @@ def normalize_numeric(df: pd.DataFrame) -> pd.DataFrame:
         if col in result.columns:
             result[col] = (
                 pd.to_numeric(result[col].astype(str).str.replace(",", ""), errors="coerce")
+                .replace([np.inf, -np.inf], np.nan)
                 .fillna(0)
                 .astype(float)
             )
