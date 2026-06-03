@@ -162,7 +162,7 @@ def transform_pension_fund_balance(
     )
 
     if fund_price:
-        df["holding_quantity"] = (df["total_evaluation_amount"] / fund_price / 0.001).round(4)
+        df["holding_quantity"] = (df["total_evaluation_amount"] / fund_price / 0.001).round(0)
         df["unit_purchase_price"] = (df["total_purchase_amount"] / df["holding_quantity"] / 0.001).round(0)
     else:
         df["holding_quantity"] = 0.0
