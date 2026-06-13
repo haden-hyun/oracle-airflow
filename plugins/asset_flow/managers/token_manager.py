@@ -18,7 +18,7 @@ import requests
 from datetime import datetime
 from pytz import timezone
 from airflow.models import Variable
-from ..config.kis import KIS
+from asset_flow.config.kis import KIS
 
 
 class TokenManager:

@@ -16,8 +16,8 @@ KIS API 각 TR_ID의 응답 JSON을 받아 account.asset_daily / market.exchange
 import pandas as pd
 from typing import List
 
-from ..config.schemas import KIS_RENAME, BALANCE_COLUMNS, EXCHANGE_RATE_COLUMNS
-from .base_transformer import normalize_numeric
+from asset_flow.config.schemas import KIS_RENAME, BALANCE_COLUMNS, EXCHANGE_RATE_COLUMNS
+from asset_flow.transformers.base_transformer import normalize_numeric
 
 _CURRENCY_CODE_MAP = {
     "원/달러": "USD",

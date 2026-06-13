@@ -1,6 +1,6 @@
-from .kis import KIS
-from .upbit import UPBIT
-from .schemas import (
+from asset_flow.config.kis import KIS
+from asset_flow.config.upbit import UPBIT
+from asset_flow.config.schemas import (
     KIS_RENAME,
     UPBIT_RENAME,
     BalanceRecord,

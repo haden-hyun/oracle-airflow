@@ -11,8 +11,8 @@ BaseApiClient를 상속하여 Upbit API JWT 인증 헤더 생성과 각 엔드�
 """
 
 from typing import Dict, List
-from .base_client import BaseApiClient
-from ..config.upbit import UPBIT
+from asset_flow.clients.base_client import BaseApiClient
+from asset_flow.config.upbit import UPBIT
 
 
 class UpbitApiClient(BaseApiClient):

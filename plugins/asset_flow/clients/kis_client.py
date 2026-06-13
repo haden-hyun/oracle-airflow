@@ -12,8 +12,8 @@ BaseApiClient를 상속하여 KIS API 인증 헤더 생성과 각 TR_ID별 요�
 """
 
 from typing import Dict, List
-from .base_client import BaseApiClient
-from ..config.kis import KIS
+from asset_flow.clients.base_client import BaseApiClient
+from asset_flow.config.kis import KIS
 
 
 class KISApiClient(BaseApiClient):

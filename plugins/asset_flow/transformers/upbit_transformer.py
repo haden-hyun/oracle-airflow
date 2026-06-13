@@ -10,8 +10,8 @@ KRW 잔고는 제외하고 암호화폐 보유 종목만 처리한다.
 
 import pandas as pd
 
-from ..config.schemas import UPBIT_RENAME, BALANCE_COLUMNS
-from .base_transformer import normalize_numeric
+from asset_flow.config.schemas import UPBIT_RENAME, BALANCE_COLUMNS
+from asset_flow.transformers.base_transformer import normalize_numeric
 
 
 def transform_upbit_balance(
