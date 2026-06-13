@@ -20,6 +20,7 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sensors.external_task import ExternalTaskSensor
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
+from callbacks import slack_failure_callback, slack_recovery_callback
 import pendulum
 import pandas as pd
 from sqlalchemy import text
@@ -31,6 +32,7 @@ default_args = {
     'depends_on_past': False,
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
+    'on_failure_callback': slack_failure_callback,
 }
 
 
@@ -42,6 +44,7 @@ default_args = {
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,
     tags=['market', 'exchange-rate', 'KIS', 'daily', 'ingestion'],
+    on_success_callback=slack_recovery_callback,
     params={
         'exchange_rate': Param({
             'schema': 'market',

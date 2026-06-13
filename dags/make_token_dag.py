@@ -15,6 +15,7 @@ keywords: token, KIS, Upbit, authentication, OAuth2, JWT
 
 from airflow.decorators import task, dag
 from datetime import datetime, timedelta
+from callbacks import slack_failure_callback, slack_recovery_callback
 import pendulum
 
 kst = pendulum.timezone("Asia/Seoul")
@@ -24,6 +25,7 @@ default_args = {
     'depends_on_past': False,
     'retries': 2,
     'retry_delay': timedelta(minutes=3),
+    'on_failure_callback': slack_failure_callback,
 }
 
 
@@ -33,6 +35,7 @@ default_args = {
     description='매일 06:50 KIS/Upbit 토큰 발급 및 파일 저장',
     schedule='50 6 * * *',
     start_date=datetime(2024, 1, 1, tzinfo=kst),
+    on_success_callback=slack_recovery_callback,
     catchup=False,
     tags=['auth', 'token', 'setup', 'daily'],
 )
