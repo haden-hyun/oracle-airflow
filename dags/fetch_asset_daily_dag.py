@@ -27,6 +27,7 @@ from airflow.models.param import Param
 from airflow.operators.python import get_current_context
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sensors.external_task import ExternalTaskSensor
+from airflow.utils.trigger_rule import TriggerRule
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from callbacks import slack_failure_callback, slack_recovery_callback
@@ -108,73 +109,61 @@ def fetch_asset_daily_dag():
     @task_group(group_id='get_daily_asset_group')
     def get_daily_asset_group(dates: dict):
 
-        @task(task_id='get_overseas_stock')
+        @task(task_id='get_overseas_stock', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
         def get_overseas_stock(dates: dict) -> list:
             from asset_flow.clients.kis_client import KISApiClient
             from asset_flow.managers.token_manager import TokenManager
             from asset_flow.transformers.kis_transformer import transform_overseas_balance
             from airflow.models import Variable
 
-            try:
-                tokens = TokenManager().GetTokens()
-                config = Variable.get('KIS_STOCK', deserialize_json=True)
-                kis = KISApiClient(tokens['KIS_STOCK'], config)
-                raw = kis.get_overseas_balance()
-                df = transform_overseas_balance(raw, dates["standard_date"], config)
-                if df.empty:
-                    print("해외주식 데이터 없음")
-                    return []
-                print(f"해외주식 수집: {len(df)}건")
-                return df.to_dict('records')
-            except Exception as e:
-                print(f"[ERROR] 해외주식 조회 실패: {e}")
+            tokens = TokenManager().GetTokens()
+            config = Variable.get('KIS_STOCK', deserialize_json=True)
+            kis = KISApiClient(tokens['KIS_STOCK'], config)
+            raw = kis.get_overseas_balance()
+            df = transform_overseas_balance(raw, dates["standard_date"], config)
+            if df.empty:
+                print("해외주식 데이터 없음")
                 return []
+            print(f"해외주식 수집: {len(df)}건")
+            return df.to_dict('records')
 
-        @task(task_id='get_domestic_stock')
+        @task(task_id='get_domestic_stock', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
         def get_domestic_stock(dates: dict) -> list:
             from asset_flow.clients.kis_client import KISApiClient
             from asset_flow.managers.token_manager import TokenManager
             from asset_flow.transformers.kis_transformer import transform_domestic_balance
             from airflow.models import Variable
 
-            try:
-                tokens = TokenManager().GetTokens()
-                config = Variable.get('KIS_STOCK', deserialize_json=True)
-                kis = KISApiClient(tokens['KIS_STOCK'], config)
-                raw = kis.get_domestic_balance()
-                df = transform_domestic_balance(raw, dates["standard_date"], config)
-                if df.empty:
-                    print("국내주식 데이터 없음")
-                    return []
-                print(f"국내주식 수집: {len(df)}건")
-                return df.to_dict('records')
-            except Exception as e:
-                print(f"[ERROR] 국내주식 조회 실패: {e}")
+            tokens = TokenManager().GetTokens()
+            config = Variable.get('KIS_STOCK', deserialize_json=True)
+            kis = KISApiClient(tokens['KIS_STOCK'], config)
+            raw = kis.get_domestic_balance()
+            df = transform_domestic_balance(raw, dates["standard_date"], config)
+            if df.empty:
+                print("국내주식 데이터 없음")
                 return []
+            print(f"국내주식 수집: {len(df)}건")
+            return df.to_dict('records')
 
-        @task(task_id='get_isa_stock')
+        @task(task_id='get_isa_stock', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
         def get_isa_stock(dates: dict) -> list:
             from asset_flow.clients.kis_client import KISApiClient
             from asset_flow.managers.token_manager import TokenManager
             from asset_flow.transformers.kis_transformer import transform_domestic_balance
             from airflow.models import Variable
 
-            try:
-                tokens = TokenManager().GetTokens()
-                config = Variable.get('KIS_ISA', deserialize_json=True)
-                kis = KISApiClient(tokens['KIS_ISA'], config)
-                raw = kis.get_domestic_balance()
-                df = transform_domestic_balance(raw, dates["standard_date"], config)
-                if df.empty:
-                    print("ISA 주식 데이터 없음")
-                    return []
-                print(f"ISA 주식 수집: {len(df)}건")
-                return df.to_dict('records')
-            except Exception as e:
-                print(f"[ERROR] ISA 주식 조회 실패: {e}")
+            tokens = TokenManager().GetTokens()
+            config = Variable.get('KIS_ISA', deserialize_json=True)
+            kis = KISApiClient(tokens['KIS_ISA'], config)
+            raw = kis.get_domestic_balance()
+            df = transform_domestic_balance(raw, dates["standard_date"], config)
+            if df.empty:
+                print("ISA 주식 데이터 없음")
                 return []
+            print(f"ISA 주식 수집: {len(df)}건")
+            return df.to_dict('records')
 
-        @task(task_id='get_pension_assets')
+        @task(task_id='get_pension_assets', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
         def get_pension_assets(dates: dict) -> list:
             from asset_flow.clients.kis_client import KISApiClient
             from asset_flow.managers.token_manager import TokenManager
@@ -185,101 +174,89 @@ def fetch_asset_daily_dag():
             )
             from airflow.models import Variable
 
-            try:
-                tokens = TokenManager().GetTokens()
-                config = Variable.get('KIS_PENSION', deserialize_json=True)
-                pension_fund_code = get_current_context().get('params')['pension_fund_code']
+            tokens = TokenManager().GetTokens()
+            config = Variable.get('KIS_PENSION', deserialize_json=True)
+            pension_fund_code = get_current_context().get('params')['pension_fund_code']
 
-                pg_hook = PostgresHook(postgres_conn_id='postgres_asset')
-                engine = pg_hook.get_sqlalchemy_engine()
-                fund_price, product_name = get_fund_price(engine, pension_fund_code, dates["standard_date"])
+            pg_hook = PostgresHook(postgres_conn_id='postgres_asset')
+            engine = pg_hook.get_sqlalchemy_engine()
+            fund_price, product_name = get_fund_price(engine, pension_fund_code, dates["standard_date"])
 
-                kis = KISApiClient(tokens['KIS_PENSION'], config)
+            kis = KISApiClient(tokens['KIS_PENSION'], config)
 
-                account_balance_raw = kis.get_account_balance()
-                pension_fund_df = transform_pension_fund_balance(
-                    account_balance_raw,
-                    standard_date=dates["standard_date"],
-                    config=config,
-                    product_code=pension_fund_code,
-                    fund_price=fund_price,
-                    product_name=product_name,
-                )
+            account_balance_raw = kis.get_account_balance()
+            pension_fund_df = transform_pension_fund_balance(
+                account_balance_raw,
+                standard_date=dates["standard_date"],
+                config=config,
+                product_code=pension_fund_code,
+                fund_price=fund_price,
+                product_name=product_name,
+            )
 
-                domestic_raw = kis.get_domestic_balance()
-                pension_stock_df = transform_domestic_balance(
-                    domestic_raw, dates["standard_date"], config,
-                )
+            domestic_raw = kis.get_domestic_balance()
+            pension_stock_df = transform_domestic_balance(
+                domestic_raw, dates["standard_date"], config,
+            )
 
-                pension_df = pd.concat([pension_fund_df, pension_stock_df], ignore_index=True)
-                if pension_df.empty:
-                    print("연금저축 데이터 없음")
-                    return []
-                print(
-                    f"연금저축 수집: {len(pension_df)}건 "
-                    f"(펀드: {len(pension_fund_df)}, 주식: {len(pension_stock_df)})"
-                )
-                return pension_df.to_dict('records')
-            except Exception as e:
-                print(f"[ERROR] 연금저축 조회 실패: {e}")
+            pension_df = pd.concat([pension_fund_df, pension_stock_df], ignore_index=True)
+            if pension_df.empty:
+                print("연금저축 데이터 없음")
                 return []
+            print(
+                f"연금저축 수집: {len(pension_df)}건 "
+                f"(펀드: {len(pension_fund_df)}, 주식: {len(pension_stock_df)})"
+            )
+            return pension_df.to_dict('records')
 
-        @task(task_id='get_cma_cash')
+        @task(task_id='get_cma_cash', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
         def get_cma_cash(dates: dict) -> list:
             from asset_flow.clients.kis_client import KISApiClient
             from asset_flow.managers.token_manager import TokenManager
             from asset_flow.transformers.kis_transformer import transform_cma_cash_balance
             from airflow.models import Variable
 
-            try:
-                tokens = TokenManager().GetTokens()
-                cma_config = Variable.get('KIS_CMA', deserialize_json=True)
-                # CMA는 ISA 토큰 공유, 계좌 설정만 KIS_CMA 사용
-                kis = KISApiClient(tokens['KIS_ISA'], cma_config)
-                raw = kis.get_account_balance()
-                df = transform_cma_cash_balance(raw, dates["standard_date"], cma_config)
-                if df.empty:
-                    print("CMA 현금 데이터 없음")
-                    return []
-                print(f"CMA 현금 수집: {len(df)}건")
-                return df.to_dict('records')
-            except Exception as e:
-                print(f"[ERROR] CMA 현금 조회 실패: {e}")
+            tokens = TokenManager().GetTokens()
+            cma_config = Variable.get('KIS_CMA', deserialize_json=True)
+            # CMA는 ISA 토큰 공유, 계좌 설정만 KIS_CMA 사용
+            kis = KISApiClient(tokens['KIS_ISA'], cma_config)
+            raw = kis.get_account_balance()
+            df = transform_cma_cash_balance(raw, dates["standard_date"], cma_config)
+            if df.empty:
+                print("CMA 현금 데이터 없음")
                 return []
+            print(f"CMA 현금 수집: {len(df)}건")
+            return df.to_dict('records')
 
-        @task(task_id='get_upbit_assets')
+        @task(task_id='get_upbit_assets', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
         def get_upbit_assets(dates: dict) -> list:
             from asset_flow.clients.upbit_client import UpbitApiClient
             from asset_flow.managers.token_manager import TokenManager
             from asset_flow.transformers.upbit_transformer import transform_upbit_balance
             from airflow.models import Variable
 
-            try:
-                tokens = TokenManager().GetTokens()
-                config = Variable.get('UPBIT', deserialize_json=True)
+            tokens = TokenManager().GetTokens()
+            config = Variable.get('UPBIT', deserialize_json=True)
 
-                upbit = UpbitApiClient(tokens['UPBIT'])
-                balance_raw = upbit.get_balance()
-                market_code_raw = upbit.get_market_codes()
+            upbit = UpbitApiClient(tokens['UPBIT'])
+            balance_raw = upbit.get_balance()
+            market_code_raw = upbit.get_market_codes()
 
-                markets = ['KRW-' + b['currency'] for b in balance_raw if b['currency'] != 'KRW']
-                # price_raw = upbit.get_current_prices(markets) if markets else []  # 실시간 현재가 (T-1 기준일 불일치로 대체)
-                price_raw = upbit.get_daily_candles(markets, to_date=dates["base_date"]) if markets else []
+            markets = ['KRW-' + b['currency'] for b in balance_raw if b['currency'] != 'KRW']
+            # price_raw = upbit.get_current_prices(markets) if markets else []  # 실시간 현재가 (T-1 기준일 불일치로 대체)
+            price_raw = upbit.get_daily_candles(markets, to_date=dates["base_date"]) if markets else []
 
-                df = transform_upbit_balance(
-                    balance_raw, market_code_raw, price_raw,
-                    standard_date=dates["standard_date"],
-                    account_code=config.get('account', 'UPBIT'),
-                    account_name=config.get('type', '업비트'),
-                )
-                if df.empty:
-                    print("Upbit 데이터 없음")
-                    return []
-                print(f"Upbit 수집: {len(df)}건")
-                return df.to_dict('records')
-            except Exception as e:
-                print(f"[ERROR] Upbit 조회 실패: {e}")
+            df = transform_upbit_balance(
+                balance_raw, market_code_raw, price_raw,
+                standard_date=dates["standard_date"],
+                account_code=config.get('account', 'UPBIT'),
+                account_name=config.get('type', '업비트'),
+            )
+            if df.empty:
+                print("Upbit 데이터 없음")
                 return []
+            print(f"Upbit 수집: {len(df)}건")
+            return df.to_dict('records')
 
         return [
             get_overseas_stock(dates),
@@ -290,13 +267,18 @@ def fetch_asset_daily_dag():
             get_upbit_assets(dates),
         ]
 
-    @task(task_id='upload_asset_data')
+    @task(task_id='upload_asset_data', trigger_rule=TriggerRule.ALL_DONE)
     def upload_asset_data(dates: dict, asset_data_list: list) -> None:
         """
         수집된 전 자산 레코드를 account.asset_daily 테이블에 통합 적재
 
         6개 서브태스크 결과를 하나의 DataFrame으로 합산한 뒤,
         기존 standard_date 행을 삭제(DELETE)하고 신규 삽입(INSERT)하여 멱등성을 보장한다.
+
+        trigger_rule=ALL_DONE: 특정 계좌(서브태스크)가 재시도 끝에 최종 실패하더라도
+        나머지 계좌 데이터는 적재되도록 한다. 실패한 서브태스크는 XCom을 푸시하지
+        않으므로 asset_data_list에서 None으로 들어오며, 아래에서 자동으로 걸러진다.
+        해당 서브태스크 자체는 FAILED로 표시되어 on_failure_callback으로 알림이 간다.
 
         Args:
             dates: get_standard_date() 반환 딕셔너리 {standard_date, base_date}

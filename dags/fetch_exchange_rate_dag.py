@@ -79,7 +79,7 @@ def fetch_exchange_rate_dag():
         print(f"기준일자: [{standard_date}]")
         return standard_date
 
-    @task(task_id='fetch_exchange_rates')
+    @task(task_id='fetch_exchange_rates', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
     def fetch_exchange_rates(standard_date: str) -> list:
         """
         KIS API에서 USD·JPY·GBP·EUR 환율 원시 데이터 수집

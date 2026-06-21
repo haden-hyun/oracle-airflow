@@ -46,15 +46,25 @@ def _get_error_message(context: dict) -> str:
 
 
 def _was_previous_run_failed(dag_id: str, current_run_id: str) -> bool:
-    """직전 DAG 실행이 실패했는지 확인 (Recovery Alert 판단용)"""
-    try:
-        runs = (
-            DagRun.find(dag_id=dag_id, state=None)
-        )
-        # 실행 시작 시간 기준 정렬
-        sorted_runs = sorted(runs, key=lambda r: r.execution_date, reverse=True)
+    """직전 '동일 run_type' DAG 실행이 실패했는지 확인 (Recovery Alert 판단용)
 
-        # 현재 run 제외하고 직전 run 찾기
+    수동/ad-hoc(run_type=manual) 트리거는 execution_date가 정기 스케줄 사이에
+    끼어들 수 있어, 구분 없이 비교하면 정상적으로 연속 성공 중인 스케줄에도
+    엉뚱한 복구 알림이 발생한다. 따라서 현재 run과 동일한 run_type만 비교한다.
+    """
+    try:
+        current_runs = DagRun.find(dag_id=dag_id, run_id=current_run_id)
+        if not current_runs:
+            return False
+        current_run_type = current_runs[0].run_type
+
+        runs = DagRun.find(dag_id=dag_id, state=None)
+        same_type_runs = [r for r in runs if r.run_type == current_run_type]
+
+        # 실행 시작 시간 기준 정렬
+        sorted_runs = sorted(same_type_runs, key=lambda r: r.execution_date, reverse=True)
+
+        # 현재 run 제외하고 직전 동일 타입 run 찾기
         previous = next((r for r in sorted_runs if r.run_id != current_run_id), None)
         if previous is None:
             return False
