@@ -8,6 +8,7 @@ Airflow 내부에서는 PostgresHook을 통해 엔진을 주입받으며,
 
 from typing import Optional, Tuple
 
+import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -55,3 +56,37 @@ def get_fund_price(
         return None, None
 
     return float(row.standard_price), row.product_name
+
+
+def delete_and_insert_account_assets(
+    engine: Engine,
+    schema: str,
+    table_name: str,
+    standard_date: str,
+    account_code: str,
+    records: list,
+) -> int:
+    """(standard_date, account_code)에 스코프된 멱등 적재.
+
+    해당 계좌·기준일 행만 DELETE 후 records를 INSERT하므로, 다른 계좌의
+    데이터는 건드리지 않는다. 계좌 단위 재시도/백필이 다른 계좌 데이터를
+    덮어쓰지 않도록 보장하는 것이 이 스코핑의 목적이다.
+
+    Returns:
+        삽입된 행 수
+    """
+    full_table_name = f"{schema}.{table_name}"
+    with engine.begin() as conn:
+        conn.execute(
+            text(f"DELETE FROM {full_table_name} WHERE standard_date = :std_date AND account_code = :account_code"),
+            {"std_date": standard_date, "account_code": account_code},
+        )
+        if records:
+            pd.DataFrame(records).to_sql(
+                name=table_name,
+                con=conn,
+                schema=schema,
+                if_exists='append',
+                index=False,
+            )
+    return len(records)
