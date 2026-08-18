@@ -68,19 +68,23 @@ def delete_and_insert_account_assets(
 ) -> int:
     """(standard_date, account_code)에 스코프된 멱등 적재.
 
-    해당 계좌·기준일 행만 DELETE 후 records를 INSERT하므로, 다른 계좌의
-    데이터는 건드리지 않는다. 계좌 단위 재시도/백필이 다른 계좌 데이터를
-    덮어쓰지 않도록 보장하는 것이 이 스코핑의 목적이다.
+    해당 계좌·기준일 행만 DELETE 후 records를 INSERT하므로, 계좌 단위
+    재시도/백필이 다른 계좌 데이터를 덮어쓰지 않는다.
+
+    DELETE 행 수는 정상 첫 실행이면 0이다. 재실행이 아닌데 0이 아니면 같은
+    (standard_date, account_code)에 쓰는 upload가 둘 이상이라는 신호다.
 
     Returns:
         삽입된 행 수
     """
     full_table_name = f"{schema}.{table_name}"
     with engine.begin() as conn:
-        conn.execute(
+        result = conn.execute(
             text(f"DELETE FROM {full_table_name} WHERE standard_date = :std_date AND account_code = :account_code"),
             {"std_date": standard_date, "account_code": account_code},
         )
+        if result.rowcount:
+            print(f"[재적재] {standard_date} {account_code}: 기존 {result.rowcount}건 삭제 후 재적재")
         if records:
             pd.DataFrame(records).to_sql(
                 name=table_name,
