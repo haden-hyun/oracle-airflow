@@ -7,8 +7,7 @@ keywords: asset, portfolio, KIS, Upbit, stock, fund, CMA, crypto, PostgreSQL, da
 account.asset_daily 테이블에 계좌 단위로 적재한다.
 
 수집 자산:
-    - 해외주식 (KIS_STOCK, TR: TTTS3012R)
-    - 국내주식 (KIS_STOCK, TR: TTTC8434R)
+    - 위탁계좌 주식 (KIS_STOCK, TR: TTTS3012R 해외 + TTTC8434R 국내)
     - ISA 주식 (KIS_ISA, TR: TTTC8434R)
     - 연금저축 펀드 + 주식 (KIS_PENSION, TR: CTRP6548R + TTTC8434R)
     - CMA 현금 (KIS_ISA/KIS_CMA, TR: CTRP6548R)
@@ -22,15 +21,20 @@ account.asset_daily 테이블에 계좌 단위로 적재한다.
     - base_date (T):       Upbit 일 캔들 to 경계값 — base_date 00:00:00 이전 캔들 = T-1 종가
 
 아키텍처:
-    수집(get_daily_asset_group)과 적재(upload_asset_group)를 단계별 task_group으로
-    분리하되, 각 upload_X는 같은 계좌의 get_X 결과(XCom)에만 의존한다(전체
-    리스트가 아닌 개별 참조). upload_X는 DELETE WHERE standard_date AND
-    account_code로 스코프를 좁혀 다른 계좌의 데이터를 건드리지 않는다.
-    이를 통해 특정 계좌가 실패해도(get 단계든 upload 단계든) 나머지 계좌는
-    영향받지 않고, 실패한 계좌의 get_X/upload_X 쌍만 단독으로 재시도/백필할 수 있다.
+    계좌 단위 get_X/upload_X 페어. upload_X는 DELETE 스코프를
+    (standard_date, account_code)로 좁혀 다른 계좌를 건드리지 않으며,
+    실패한 계좌만 단독 재시도/백필할 수 있다.
+
+    [불변식] 한 account_code = 한 get_X/upload_X 페어.
+    같은 계좌를 두 upload가 병렬로 쓰면 DELETE 스코프가 겹쳐 서로의 적재분을
+    지운다. 위탁계좌의 해외·국내를 get_stock_account 하나로 묶은 이유다.
+
+    [빈 응답] get_X는 0건이면 예외를 던진다. 0건을 성공으로 넘기면 upload_X가
+    DELETE만 수행해 기존 적재분이 사라진다.
 """
 
 from airflow.decorators import task, dag, task_group
+from airflow.exceptions import AirflowException
 from airflow.models.param import Param
 from airflow.operators.python import get_current_context
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -116,43 +120,41 @@ def fetch_asset_daily_dag():
     @task_group(group_id='get_daily_asset_group')
     def get_daily_asset_group(dates: dict) -> dict:
 
-        @task(task_id='get_overseas_stock', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
-        def get_overseas_stock(dates: dict) -> dict:
+        @task(task_id='get_stock_account', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
+        def get_stock_account(dates: dict) -> dict:
+            """
+            위탁계좌(KIS_STOCK)의 해외주식 + 국내주식 수집
+
+            TR은 다르지만 같은 계좌라 한 태스크로 묶는다(모듈 docstring 불변식 참조).
+            """
             from asset_flow.clients.kis_client import KISApiClient
             from asset_flow.managers.token_manager import TokenManager
-            from asset_flow.transformers.kis_transformer import transform_overseas_balance
+            from asset_flow.transformers.kis_transformer import (
+                transform_overseas_balance,
+                transform_domestic_balance,
+            )
             from airflow.models import Variable
 
             tokens = TokenManager().GetTokens()
             config = Variable.get('KIS_STOCK', deserialize_json=True)
             account_code = f"{config['account']}-{config['product_code']}"
             kis = KISApiClient(tokens['KIS_STOCK'], config)
-            raw = kis.get_overseas_balance()
-            df = transform_overseas_balance(raw, dates["standard_date"], config)
-            if df.empty:
-                print("해외주식 데이터 없음")
-            else:
-                print(f"해외주식 수집: {len(df)}건")
-            return {"account_code": account_code, "records": df.to_dict('records')}
 
-        @task(task_id='get_domestic_stock', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
-        def get_domestic_stock(dates: dict) -> dict:
-            from asset_flow.clients.kis_client import KISApiClient
-            from asset_flow.managers.token_manager import TokenManager
-            from asset_flow.transformers.kis_transformer import transform_domestic_balance
-            from airflow.models import Variable
+            overseas_df = transform_overseas_balance(
+                kis.get_overseas_balance(), dates["standard_date"], config,
+            )
+            domestic_df = transform_domestic_balance(
+                kis.get_domestic_balance(), dates["standard_date"], config,
+            )
 
-            tokens = TokenManager().GetTokens()
-            config = Variable.get('KIS_STOCK', deserialize_json=True)
-            account_code = f"{config['account']}-{config['product_code']}"
-            kis = KISApiClient(tokens['KIS_STOCK'], config)
-            raw = kis.get_domestic_balance()
-            df = transform_domestic_balance(raw, dates["standard_date"], config)
-            if df.empty:
-                print("국내주식 데이터 없음")
-            else:
-                print(f"국내주식 수집: {len(df)}건")
-            return {"account_code": account_code, "records": df.to_dict('records')}
+            stock_df = pd.concat([overseas_df, domestic_df], ignore_index=True)
+            if stock_df.empty:
+                raise AirflowException("위탁계좌 주식 데이터 없음 — 빈 응답")
+            print(
+                f"위탁계좌 주식 수집: {len(stock_df)}건 "
+                f"(해외: {len(overseas_df)}, 국내: {len(domestic_df)})"
+            )
+            return {"account_code": account_code, "records": stock_df.to_dict('records')}
 
         @task(task_id='get_isa_stock', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
         def get_isa_stock(dates: dict) -> dict:
@@ -168,9 +170,8 @@ def fetch_asset_daily_dag():
             raw = kis.get_domestic_balance()
             df = transform_domestic_balance(raw, dates["standard_date"], config)
             if df.empty:
-                print("ISA 주식 데이터 없음")
-            else:
-                print(f"ISA 주식 수집: {len(df)}건")
+                raise AirflowException("ISA 주식 데이터 없음 — 빈 응답")
+            print(f"ISA 주식 수집: {len(df)}건")
             return {"account_code": account_code, "records": df.to_dict('records')}
 
         @task(task_id='get_pension_assets', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
@@ -212,12 +213,11 @@ def fetch_asset_daily_dag():
 
             pension_df = pd.concat([pension_fund_df, pension_stock_df], ignore_index=True)
             if pension_df.empty:
-                print("연금저축 데이터 없음")
-            else:
-                print(
-                    f"연금저축 수집: {len(pension_df)}건 "
-                    f"(펀드: {len(pension_fund_df)}, 주식: {len(pension_stock_df)})"
-                )
+                raise AirflowException("연금저축 데이터 없음 — 빈 응답")
+            print(
+                f"연금저축 수집: {len(pension_df)}건 "
+                f"(펀드: {len(pension_fund_df)}, 주식: {len(pension_stock_df)})"
+            )
             return {"account_code": account_code, "records": pension_df.to_dict('records')}
 
         @task(task_id='get_cma_cash', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
@@ -235,9 +235,8 @@ def fetch_asset_daily_dag():
             raw = kis.get_account_balance()
             df = transform_cma_cash_balance(raw, dates["standard_date"], cma_config)
             if df.empty:
-                print("CMA 현금 데이터 없음")
-            else:
-                print(f"CMA 현금 수집: {len(df)}건")
+                raise AirflowException("CMA 현금 데이터 없음 — 빈 응답")
+            print(f"CMA 현금 수집: {len(df)}건")
             return {"account_code": account_code, "records": df.to_dict('records')}
 
         @task(task_id='get_upbit_assets', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
@@ -266,14 +265,12 @@ def fetch_asset_daily_dag():
                 account_name=config.get('type', '업비트'),
             )
             if df.empty:
-                print("Upbit 데이터 없음")
-            else:
-                print(f"Upbit 수집: {len(df)}건")
+                raise AirflowException("Upbit 데이터 없음 — 빈 응답")
+            print(f"Upbit 수집: {len(df)}건")
             return {"account_code": account_code, "records": df.to_dict('records')}
 
         return {
-            'overseas_stock': get_overseas_stock(dates),
-            'domestic_stock': get_domestic_stock(dates),
+            'stock': get_stock_account(dates),
             'isa_stock': get_isa_stock(dates),
             'pension': get_pension_assets(dates),
             'cma_cash': get_cma_cash(dates),
@@ -285,10 +282,9 @@ def fetch_asset_daily_dag():
         """
         단일 계좌의 수집 결과를 account.asset_daily에 스코프된 멱등 적재
 
-        trigger_rule=ALL_DONE: 대응하는 get_X가 재시도 끝에 최종 실패하면
-        payload가 XCom으로 전달되지 않아 None이 되며, 이 경우 DELETE/INSERT
-        없이 그대로 종료한다(다른 계좌의 데이터·기존 적재분에 영향을 주지
-        않음). get_X 자체는 FAILED로 표시되어 별도로 알림이 간다.
+        trigger_rule=ALL_DONE: get_X가 최종 실패하면 payload가 None이 되어
+        DELETE/INSERT 없이 종료한다(기존 적재분 보존). get_X의 0건 예외도
+        이 경로를 타기 위한 것이다 — 0건 payload는 truthy라 가드를 통과한다.
 
         Args:
             dates: get_standard_date() 반환 딕셔너리 {standard_date, base_date}
@@ -318,8 +314,7 @@ def fetch_asset_daily_dag():
 
     @task_group(group_id='upload_asset_group')
     def upload_asset_group(dates: dict, get_results: dict):
-        upload_account.override(task_id='upload_overseas_stock')(dates, get_results['overseas_stock'])
-        upload_account.override(task_id='upload_domestic_stock')(dates, get_results['domestic_stock'])
+        upload_account.override(task_id='upload_stock_account')(dates, get_results['stock'])
         upload_account.override(task_id='upload_isa_stock')(dates, get_results['isa_stock'])
         upload_account.override(task_id='upload_pension_assets')(dates, get_results['pension'])
         upload_account.override(task_id='upload_cma_cash')(dates, get_results['cma_cash'])
