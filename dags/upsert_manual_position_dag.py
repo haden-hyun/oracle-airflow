@@ -43,12 +43,34 @@ ACCOUNT_CODE_ENUM = [
 # 좌수 검증 오차 허용치 — 초과하면 자릿수 오타로 간주해 예외
 VALIDATION_TOLERANCE = 0.01
 
+DAG_DOC = """
+### 목적
+IRP·DC·적금·청약처럼 API가 없는 자산의 포지션을 사람이 앱 화면을 보고 직접 입력하는
+유일한 쓰기 경로다. 입금·결제가 있을 때마다 트리거한다.
+
+### Pipeline
+1. `validate`: 입력값 검증
+   - IRP·DC: 좌수 × NAV(standard_date) × multiplier와 `evaluation_amount`를 대조,
+     오차 1% 초과면 실패(자릿수 오타 방지). NAV가 없거나 `evaluation_amount` 미입력이면 스킵
+   - 적금·청약: 누적 납입원금이 직전 원장값보다 줄면 경고만
+2. `upsert`: 검증된 값을 원장에 저장. 같은 `(standard_date, account_code)`로
+   재입력하면 오타 정정으로 간주해 덮어쓴다
+
+### Task
+| Task | 내용 |
+|---|---|
+| `validate` | 계좌·타입 확인 후 IRP·DC는 NAV 대조 검증, 적금·청약은 감소 여부만 확인 |
+| `upsert` | `account.manual_position_ledger`에 UPSERT |
+
+> Param 사용법은 저장소 루트 `README.md`의 "upsert_manual_position 사용법" 참고.
+"""
+
 
 @dag(
     dag_id='upsert_manual_position',
     default_args=default_args,
     description='수동 자산(IRP·DC·적금·청약) 원장 입력 (월 1회 수동 트리거)',
-    doc_md=__doc__,
+    doc_md=DAG_DOC,
     schedule=None,
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,

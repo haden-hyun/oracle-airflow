@@ -35,12 +35,34 @@ default_args = {
     'on_failure_callback': slack_failure_callback,
 }
 
+DAG_DOC = """
+### 목적
+USD·JPY·GBP·EUR 환율을 매일 수집해 원화 기준으로 통일 저장한다.
+`fetch_asset_daily`가 해외주식 평가금액을 원화로 환산할 때 이 값을 쓴다.
+
+### Pipeline
+1. `get_standard_date`: 실행일 기준 T-1(전일) 계산
+2. `fetch_exchange_rates`: KIS API로 4개 통화쌍 원시 데이터 수집
+3. `transform_exchange_rates`: GBP·EUR는 KIS가 달러 기준으로 주므로,
+   원/달러 기준가를 곱해 원화 기준으로 교차 환산
+4. `upload_exchange_rates`: 해당 날짜 기존 행 DELETE 후 INSERT (멱등 적재)
+
+### Task
+| Task | 내용 |
+|---|---|
+| `wait_for_token` | `make_token` 완료 대기 |
+| `get_standard_date` | 기준일(T-1) 계산 |
+| `fetch_exchange_rates` | KIS API 원시 환율 수집 |
+| `transform_exchange_rates` | 원화 기준 교차 환산 |
+| `upload_exchange_rates` | DB 적재 |
+"""
+
 
 @dag(
     dag_id='fetch_exchange_rate',
     default_args=default_args,
     description='매일 06:55 환율 정보 수집 및 DB 적재 (USD, JPY, GBP, EUR)',
-    doc_md=__doc__,
+    doc_md=DAG_DOC,
     schedule='55 6 * * *',
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,

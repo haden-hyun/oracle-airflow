@@ -28,12 +28,24 @@ default_args = {
     'on_failure_callback': slack_failure_callback,
 }
 
+DAG_DOC = """
+### 목적
+KIS 5개 계좌 + Upbit의 API 인증 토큰을 발급해 날짜별 파일로 저장한다.
+`fetch_exchange_rate`·`fetch_fund_price_daily`·`fetch_asset_daily`가 이 파일을 읽어
+API를 호출하므로, 사실상 나머지 모든 DAG의 선행 조건이다.
+
+### Task
+| Task | 내용 |
+|---|---|
+| `generate_tokens` | 당일 토큰 파일이 이미 있으면 스킵, 없으면 KIS 5계좌 + Upbit 토큰을 새로 발급해 저장 |
+"""
+
 
 @dag(
     dag_id='make_token',
     default_args=default_args,
     description='매일 06:50 KIS/Upbit 토큰 발급 및 파일 저장',
-    doc_md=__doc__,
+    doc_md=DAG_DOC,
     schedule='50 6 * * *',
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     on_success_callback=slack_recovery_callback,

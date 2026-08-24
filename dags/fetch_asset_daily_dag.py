@@ -61,12 +61,45 @@ default_args = {
     'on_failure_callback': slack_failure_callback,
 }
 
+DAG_DOC = """
+### 목적
+전 계좌(API 5종 + 원장 기반 4종, 총 10개 자산)의 그날 잔고·평가금액을 계산해
+`account.asset_daily`에 적재하는 메인 파이프라인이다.
+
+### Pipeline
+1. `wait_for_exchange_rate` / `wait_for_fund_price_daily`: 환율·펀드기준가 DAG 완료 대기
+2. `get_standard_date`: 기준일(T-1)과 Upbit 캔들 경계값(T) 계산
+3. **조회 단계** (`get_daily_asset_group`, 9개 태스크 병렬): 계좌별로 잔고를 조회해
+   `{account_code, records}` 형태로 반환. 하나가 실패해도 나머지는 계속 진행된다
+4. **적재 단계** (`upload_asset_group`, 9개 태스크): 계좌별로 `(standard_date, account_code)`
+   스코프 DELETE 후 INSERT. 조회가 실패한 계좌는 적재를 건너뛰어 기존 데이터를 보존한다
+
+### Task — 조회(get) / 적재(upload) 페어
+| 계좌 | get / upload | 내용 |
+|---|---|---|
+| 위탁계좌 | `get_stock_account` / `upload_stock_account` | KIS 해외+국내 주식 잔고 |
+| ISA | `get_isa_stock` / `upload_isa_stock` | KIS 국내 주식 잔고 |
+| 연금저축 | `get_pension_assets` / `upload_pension_assets` | KIS 잔고 + NAV로 좌수 역산(평가금액→좌수) |
+| CMA | `get_cma_cash` / `upload_cma_cash` | KIS 계좌잔고 중 현금성 자산 |
+| 업비트 | `get_upbit_assets` / `upload_upbit_assets` | Upbit 잔고 + 당일 캔들 |
+| IRP | `get_irp_assets` / `upload_irp_assets` | 원장 좌수 × NAV(좌수→평가금액, 연금저축과 반대 방향) |
+| DC | `get_dc_assets` / `upload_dc_assets` | IRP와 계산식 동일 |
+| 청년미래적금 | `get_savings_assets` / `upload_savings_assets` | 원장의 누적 납입원금을 그대로 캐리 |
+| 청년주택드림청약 | `get_housing_assets` / `upload_housing_assets` | 위와 동일 |
+
+### 실패 처리
+- 조회 결과가 0건이면 예외를 던진다 — 빈 결과를 그대로 넘기면 적재 단계가 DELETE만
+  수행해 기존 데이터가 사라지기 때문이다.
+- IRP·DC·연금저축은 그날 NAV가 없으면 직전 값으로 채우지 않고 그 계좌만 실패 처리한다.
+- 계좌 하나의 실패가 다른 계좌 적재를 막지 않는다(계좌당 단일 get/upload 페어 불변식).
+"""
+
 
 @dag(
     dag_id='fetch_asset_daily',
     default_args=default_args,
     description='매일 07:00 자산 현황 수집 및 DB 적재 (KIS/Upbit API + IRP·DC·적금·청약 수동 원장)',
-    doc_md=__doc__,
+    doc_md=DAG_DOC,
     schedule='0 7 * * *',
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,

@@ -34,12 +34,34 @@ default_args = {
     'on_failure_callback': slack_failure_callback,
 }
 
+DAG_DOC = """
+### 목적
+연금저축·IRP·DC가 투자하는 펀드의 기준가(NAV)를 fundguide.net에서 크롤링한다.
+`fetch_asset_daily`가 이 값으로 좌수 역산(연금저축) 또는 평가금액 계산(IRP·DC)을 한다.
+
+### Pipeline
+1. `get_standard_date`: 실행일 기준 T-1 계산
+2. `crawl_fund_prices`: `fund_codes` 파라미터를 순회하며 Playwright로 기준가 크롤링.
+   타임아웃/NAV 없음인 코드는 예외 없이 건너뛴다(`[SKIP]` 로그만 남김)
+3. `upload_fund_prices`: 크롤링된 만큼만 DELETE+INSERT (0건이면 적재 없이 종료)
+
+### Task
+| Task | 내용 |
+|---|---|
+| `get_standard_date` | 기준일(T-1) 계산 |
+| `crawl_fund_prices` | 펀드코드별 기준가 크롤링, 실패 코드는 스킵 |
+| `upload_fund_prices` | DB 적재 |
+
+> 크롤링이 코드 단위로 조용히 스킵되므로, 특정 펀드의 NAV가 그날 결측일 수 있다.
+> 다운스트림(`fetch_asset_daily`)이 결측을 어떻게 처리하는지는 해당 DAG 문서 참고.
+"""
+
 
 @dag(
     dag_id='fetch_fund_price_daily',
     default_args=default_args,
     description='매일 06:55 펀드 기준가 크롤링 및 DB 적재 (fundguide.net)',
-    doc_md=__doc__,
+    doc_md=DAG_DOC,
     schedule='55 6 * * *',
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,

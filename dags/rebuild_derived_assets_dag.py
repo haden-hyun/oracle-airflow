@@ -53,11 +53,33 @@ def _date_range(start: str, end: str):
         d += timedelta(days=1)
 
 
+DAG_DOC = """
+### 목적
+IRP·DC·적금·청약 4계좌만 `start_date`~`end_date` 범위로 `asset_daily`를 재계산·재적재한다.
+좌수·원금 오타 정정, 신규 계좌 등록, `fund_price_daily` 결측 복구 후에 쓴다.
+KIS·Upbit 계좌는 과거 잔고 API가 없어 이 DAG로 처리할 수 없다.
+
+### Pipeline
+계좌별 독립 태스크 4개가 각각 날짜를 하루씩 순회하며 원장 조회 → 변환 → 적재를 반복한다.
+`fetch_asset_daily`의 하루치 로직을 날짜 루프로 감싼 것으로, 계산 로직 자체는 동일하다.
+
+### Task
+| Task | 내용 |
+|---|---|
+| `rebuild_irp` | IRP 좌수 × NAV 재계산. NAV 결측일은 건너뛰고 끝에 실패 목록과 함께 실패 처리 |
+| `rebuild_dc` | DC, 위와 동일 |
+| `rebuild_savings` | 청년미래적금 원금 캐리 재계산 |
+| `rebuild_housing` | 청년주택드림청약, 위와 동일 |
+
+> 원장에 그 날짜 이전 행이 없으면(계좌 개설 전) 조용히 건너뛴다 — 정상 상황이다.
+"""
+
+
 @dag(
     dag_id='rebuild_derived_assets',
     default_args=default_args,
     description='IRP·DC·적금·청약 4계좌 asset_daily 백필/재계산 (날짜 범위 수동 트리거)',
-    doc_md=__doc__,
+    doc_md=DAG_DOC,
     schedule=None,
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,
