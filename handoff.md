@@ -1,316 +1,301 @@
-# Handoff — `fetch_asset_daily` 위탁계좌 일별 적재 누락
+# Handoff — 수동 자산(IRP·적금·주택청약) 일별 적재 설계
 
-- 작성일: 2026-08-18
-- 대상 DAG: `fetch_asset_daily` (`dags/fetch_asset_daily_dag.py`)
-- 대상 테이블: `account.asset_daily`
-- 상태: **원인 규명·코드 수정·소실분 백필 완료 / 배포 및 관찰 대기**
-
----
-
-## 1. 증상
-
-위탁계좌(`KIS_STOCK`, `account_code = <위탁계좌>`)의 국내주식과 해외주식이
-일자별로 **둘 중 하나만** 적재된다. 어떤 날은 국내만, 어떤 날은 해외만 남는다.
-
-최초 가설은 "휴장일에 KIS 잔고 API가 빈 `output1`을 반환한다"였으나, **데이터로 반증되었다.**
+- 작성일: 2026-08-24
+- 대상 DAG: `fetch_asset_daily`, `fetch_fund_price_daily`, 신규 2개
+- 대상 테이블: `account.asset_daily`, 신규 `account.manual_position_ledger`
+- 상태: **설계 확정 / 구현 대기**
 
 ---
 
-## 2. 원인 (확정)
+## 0. 배경과 결론
 
-**같은 계좌를 대상으로 하는 두 upload 태스크의 동시 쓰기 경합(race condition).**
+KIS·Upbit API로 커버되지 않는 자산 세 가지(퇴직연금 IRP, 적금, 주택청약)를
+`account.asset_daily`에 매일 적재해야 한다. 투자·자동이체가 급여일 중심이라
+포지션 변동은 사실상 월 1회다.
 
-`get_overseas_stock`과 `get_domestic_stock`은 모두 `Variable.get('KIS_STOCK')`을 읽으므로
-`account_code`가 동일하다.
+최초 안은 **자산별 수동 DAG 3개 + forward-fill 백필**이었으나 다음 이유로 기각했다.
 
-```python
-# dags/fetch_asset_daily_dag.py:127-128 (get_overseas_stock)
-config = Variable.get('KIS_STOCK', deserialize_json=True)
-account_code = f"{config['account']}-{config['product_code']}"   # <위탁계좌>
-
-# dags/fetch_asset_daily_dag.py:146-147 (get_domestic_stock)
-config = Variable.get('KIS_STOCK', deserialize_json=True)
-account_code = f"{config['account']}-{config['product_code']}"   # <위탁계좌>  ← 동일
-```
-
-그런데 적재 함수의 DELETE 스코프는 `(standard_date, account_code)`이다.
-
-```sql
--- plugins/asset_flow/managers/db_manager.py:81
-DELETE FROM account.asset_daily
- WHERE standard_date = :std_date AND account_code = :account_code
-```
-
-`upload_overseas_stock`과 `upload_domestic_stock`이 **병렬 실행**되면서 서로가 방금 INSERT한 행을 DELETE한다.
-
-계좌 단위 스코핑은 "다른 계좌를 건드리지 않는다"는 목적은 달성했지만,
-**한 계좌가 두 개의 get/upload 페어로 쪼개져 있는 경우**를 전제에서 놓쳤다.
-
-### PostgreSQL Read Committed 동작
-
-- 두 트랜잭션이 거의 동시에 시작 → 각 DELETE의 스캔 스냅샷에 상대 INSERT 행이 아직 없음 → **둘 다 생존**
-- 시작 시점이 조금이라도 벌어짐 → 후행 DELETE가 선행 INSERT 행을 보고 지움 → **후행만 생존**
-
-승자는 그날의 API 응답 속도가 정한다. 따라서 요일·휴장일과 무관하다.
-
----
-
-## 3. 증거
-
-### 3.1 발생 시점이 리팩터링 커밋과 정확히 일치
-
-| 항목 | 날짜 |
+| 최초 안 | 문제 |
 |---|---|
-| 누락 시작 `standard_date` | `2026-06-21` |
-| 커밋 `fd75504 refactor: 자산 적재를 계좌 단위 get/upload 페어로 재구성` | `2026-06-21` |
+| 수동 DAG 3개 | 정본이 Airflow `dag_run.conf`가 된다 — 조회·정정·감사 불가, 메타DB 정리 대상 |
+| | 스케줄·의존성·실패격리가 셋 다 동일. 다른 건 `asset_type` 문자열 하나뿐 |
+| forward-fill 백필 | 하루 결측 시 캐리 체인 단절. 소급 정정 시 전 구간 수동 재실행 |
 
-리팩터링 **이전**에는 단일 `upload_asset_data` 태스크가 6개 결과를 `pd.concat`으로
-합쳐 **하나의 트랜잭션**으로 DELETE + INSERT 했다. 충돌 여지가 없었다.
+**확정 결론: 수동인 것은 데이터이지 파이프라인이 아니다.**
+세 자산은 서로 다른 문제가 아니라 **"포지션 원장 × 일별 가격 함수"** 라는 하나의 문제다.
 
-### 3.2 리팩터링 이전에는 주말·휴장일에도 정상 적재 (휴장일 가설 반증)
-
-```
-2026-03-01 (일)  KRX 2, NASD 5, NYSE 1
-2026-03-07 (토)  KRX 2, NASD 5, NYSE 1
-2026-03-08 (일)  KRX 2, NASD 5, NYSE 1
-```
-
-`2026-01-28 ~ 2026-06-20` 전 구간에서 주말·휴장일 포함 매일 국내·해외가 모두 존재한다.
-잔고 조회는 장 상태와 무관하게 정상 응답한다.
-
-### 3.3 누락에 요일 패턴이 없음
-
-```
-2026-07-21(화) 국내만    2026-07-17(금) 해외만
-2026-07-22(수) 국내만    2026-07-18(토) 해외만
-2026-07-23(목) 국내만    2026-07-19(일) 해외만
-2026-07-24(금) 국내만    2026-07-20(월) 해외만
-```
-
-### 3.4 `insert_datetime`이 경합을 확정
-
-`2026-06-21` 이후 58일 중 **43일이 한쪽만(XOR), 15일만 둘 다**.
-둘 다 살아남은 15일은 예외 없이 두 INSERT 시각이 **밀리초 이내**다.
-
-| standard_date | 국내 insert | 해외 insert | 간격 | 결과 |
-|---|---|---|---|---|
-| 2026-06-26 | `07:00:05.386255` | `07:00:05.384689` | 1.6 ms | 둘 다 생존 |
-| 2026-07-08 | `07:00:05.974308` | `07:00:05.963655` | 10.7 ms | 둘 다 생존 |
-| 2026-08-04 | `07:00:05.572488` | `07:00:05.552974` | 19.5 ms | 둘 다 생존 |
-| 2026-06-22 | — | `07:00:05.530474` | — | 해외만 |
-| 2026-06-23 | `07:00:05.045028` | — | — | 국내만 |
-
----
-
-## 4. 영향 범위
-
-| 계좌 | 영향 | 사유 |
+| 자산 | 수동 입력 (월 1회) | 매일 파생 |
 |---|---|---|
-| `KIS_STOCK` (위탁) | **영향 있음** | 국내·해외 두 태스크가 같은 `account_code` 공유 |
-| `KIS_ISA` | 없음 | 단일 get/upload 페어 |
-| `KIS_PENSION` | 없음 | 펀드·주식을 **한 태스크 안에서** concat (`dag:213`) |
-| `KIS_CMA` | 없음 | 계좌 설정 분리 (단, ISA와 토큰 공유 — 계좌번호가 같아지면 재발) |
-| `UPBIT` | 없음 | 단일 페어 |
+| IRP | 좌수, 매입금액 | 좌수 × NAVᵗ × 0.001 |
+| 적금 | 납입원금 누계 | 금액 캐리 (CMA 패턴) |
+| 청약 | 납입원금 누계 | 금액 캐리 (CMA 패턴) |
 
-`KIS_PENSION`이 무사한 이유가 곧 해법이다. 같은 계좌의 자산을 한 태스크에서 합쳐 반환한다.
-
----
-
-## 5. 오탐으로 확인된 항목
-
-- **`2026-08-11`부터 국내 3종목 → 1종목** (`[0180V0, 278530, 292150]` → `[0228G0]`)
-  → 버그 아님. 실제 포트폴리오 교체로 확인됨.
-- **`2026-06-06`, `2026-06-13` (토) 전체 0건**
-  → 리팩터링 이전 시점이라 이 경합과 무관한 별건. DAG 실행 실패로 추정. 미조사.
+신규 DAG는 3개가 아니라 **2개**(수동 입력 1 + 백필 1)이고,
+나머지는 `fetch_asset_daily`에 계좌당 get/upload 페어 3쌍을 추가한다.
 
 ---
 
-## 6. 결정 사항 및 적용 내역
+## 1. IRP 계산 방향 — 연금저축과 반대다
 
-상태: **적용 완료 / 배포 및 관찰 대기**
-
-### 6.1 위탁계좌 수집 태스크 통합 (원인 제거)
-
-`dags/fetch_asset_daily_dag.py`
-
-`get_overseas_stock` + `get_domestic_stock` → **`get_stock_account`** 단일 태스크.
-해외·국내를 `pd.concat`으로 합쳐 계좌당 하나의 payload를 반환한다.
-`get_pension_assets`가 이미 쓰던 패턴과 동일하다.
-
-배선: `get_results` 키 `'overseas_stock'`/`'domestic_stock'` → `'stock'`,
-upload 태스크 → `upload_stock_account`. 태스크 수 get 6→5, upload 6→5.
-
-모듈 docstring에 **[불변식] 하나의 `account_code`는 정확히 하나의 get/upload 쌍을
-가진다**를 이유와 함께 명시했다. 계좌 추가 시 같은 실수를 막기 위함이다.
-
-### 6.2 계좌별 0건 fail (수집 실패 탐지)
-
-`get_stock_account`, `get_isa_stock`, `get_pension_assets`, `get_cma_cash`,
-`get_upbit_assets` **5개 전부**에 적용. Upbit 예외 없음.
+"연금저축처럼 매입금액·평가금액만 입력하면 된다"는 판단에는
+**연금저축에서 좌수 역산이 성립하는 전제**가 빠져 있다.
 
 ```python
-if df.empty:
-    raise AirflowException("... 데이터 없음 — 빈 응답")
+# plugins/asset_flow/transformers/kis_transformer.py:165
+holding_quantity = total_evaluation_amount / fund_price / 0.001
 ```
 
-기존에는 `payload = {"account_code": ..., "records": []}`가 **딕셔너리라 truthy**여서
-`upload_account`의 `if not payload` 가드를 통과했고, DELETE만 수행되어 기존 적재분이
-조용히 사라졌다. 예외로 바꾸면 `retries=3`이 일시 장애를 흡수하고, 최종 실패 시
-XCom이 없어 가드가 발동해 기존 데이터가 보존된다.
+이게 성립하는 이유는 KIS API가 **매일** 새 평가금액을 주기 때문이다.
+매일 (평가금액ᴰ, NAVᴰ) 쌍이 들어오고, 좌수는 그 쌍의 파생 결과이지 입력이 아니다.
 
-### 6.3 DELETE rowcount 로깅 (재발 감지)
+IRP는 그 쌍이 월 1회뿐이다. 나머지 29일은 평가금액이 없다.
 
-`plugins/asset_flow/managers/db_manager.py`
+| | 연금저축 (API) | IRP (수동) |
+|---|---|---|
+| 입력 | 평가금액ᴰ (매일) | 평가금액ᴰ (월 1회) |
+| 매일 있는 것 | 평가금액 + NAV | **NAV뿐** |
+| 계산 방향 | 평가금액 ÷ NAV → 좌수 | 좌수 × NAV → **평가금액** |
+| 좌수의 위치 | 파생 결과 | **저장해야 할 상태** |
 
-```python
-result = conn.execute(text(f"DELETE FROM ..."), {...})
-if result.rowcount:
-    print(f"[재적재] {standard_date} {account_code}: 기존 {result.rowcount}건 삭제 후 재적재")
+입력한 평가금액을 그대로 쓰면 한 달간 같은 숫자를 복사하는 것이 된다.
+NAV가 매일 움직이는데 IRP만 고정값이면 일별 수익률이 왜곡되고,
+매달 입력일마다 한 달치 변동이 계단으로 튄다.
+
+### 앱 실측값 검증 (2026-08-24)
+
+```
+보유수량   1,023,351 좌
+납입원금   1,750,060 원
+평가금액   1,793,812 원
+
+역산 NAV  = 1,793,812 / 1,023,351 / 0.001 = 1,752.88
+매입단가  = 1,750,060 / 1,023,351 / 0.001 = 1,710.13
+수익률    = (1,793,812 - 1,750,060) / 1,750,060 = 2.50%
 ```
 
-정상 첫 실행이면 0이어야 한다. 6월에 이 로그가 있었다면 XOR 43일 전부(74%)가
-사고 당일 잡혔을 것이다. 정당한 재실행에서도 뜨므로 fail이 아닌 로그로 둔다.
+역산 NAV가 펀드 기준가로 자연스럽고 수익률도 정확히 떨어진다.
+**보유수량 = 좌수, multiplier = 0.001** — 연금저축과 동일 체계임이 확인됐다.
 
-### 6.4 검토 후 채택하지 않은 항목
+**앱이 보유수량을 직접 표시하므로 역산조차 불필요하다.** 좌수를 그대로 입력한다.
+평가금액은 저장하지 않고 **입력 검증용으로만** 쓴다(§3 참조).
 
-- **UPSERT 전환** — PK `(standard_date, account_code, product_code)`가 있어 가능하지만,
-  stale row(같은 날 재실행 시 사라진 종목) 정리를 하려면 결국 `account_code` 스코프
-  DELETE가 필요해 **동일한 경합이 남는다.** 원인은 SQL이 아니라 태스크 구조였다.
-- **`get_pension_assets`의 concat 빈 프레임 필터** — pandas 2.1.4 실측 결과
-  `pd.concat([정상DF, pd.DataFrame()])`는 컬럼·dtype을 보존하고 FutureWarning도 없다.
-  제안이 잘못되어 철회.
-- **DAG 말미 검증 태스크** — 효과는 크지만 태스크 통합으로 원인이 제거된 뒤에는
-  중복 투자. 며칠 관찰 후 재검토.
+### IRP 전제 조건
 
----
-
-## 7. 검증 상태
-
-| 항목 | 결과 |
-|---|---|
-| `py_compile` (양 파일) | 통과 |
-| DagBag 파싱 | `IMPORT ERRORS: none` |
-| get/upload 태스크 5:5 대응 | 확인 |
-| `get_results` 키 ↔ 배선 일치 | 확인 |
-| `pd.concat` 4가지 경우 | 둘다/해외만/국내만 → 컬럼 보존, 둘다없음 → `empty=True` → raise |
-| 실제 DAG 실행 | **미검증 (배포 후 확인 필요)** |
+- IRP는 **펀드만 매수**한다 → `asset_type='CASH'` 라인 불필요
+- 따라서 `계좌 납입원금 = 펀드 매입금액` → 화면의 어느 값을 읽어도 같다
+- **단, 이 등식은 결제 완료 시점에만 성립한다.** 부담금 입금 후 결제 전
+  3영업일 구간에는 현금이 존재한다. "결제 완료 후 입력" 방침이
+  이 구간을 회피하는 전제이므로 반드시 유지할 것
 
 ---
 
-## 8. 알려진 트레이드오프
+## 2. 신규 테이블 — `account.manual_position_ledger`
 
-- **한쪽 시장만 빈 응답이면 fail하지 않는다.** 통합 후 0건 판정은 계좌 단위이므로
-  "해외 7건 + 국내 0건"은 7건만 적재되고 통과한다. 국내 종목 전량 매도가 정상
-  상태인 이상 이게 옳지만, 겉보기 증상이 원래 버그와 같아진다. 수집 로그에
-  `(해외: N, 국내: M)`을 남겨 추적 가능하게 해두었다.
-- **국내 API만 실패해도 해외까지 재시도된다.** 잔고 조회는 멱등이라 부작용 없음.
-- **Airflow UI에서 기존 4개 태스크 이력이 orphan 처리된다.** 과거 실행 기록 조회에만 영향.
+수동 자산의 **정본**. `asset_daily`는 계속 일별 스냅샷 팩트 테이블로 두고,
+원장은 그 위의 입력 계층이다.
 
----
+| 컬럼 | 타입 | 설명 |
+|---|---|---|
+| `ledger_id` | serial PK | |
+| `effective_date` | date NOT NULL | **효력일**. 이 날부터 이 포지션이 유효 |
+| `account_code` | text NOT NULL | `IRP-xxxx` / `SAVINGS-xxxx` / `HOUSING-xxxx` |
+| `account_name` | text | 퇴직연금IRP / 적금 / 주택청약 |
+| `product_code` | text NOT NULL | IRP: 펀드 표준코드 / 적금·청약: 상품코드 |
+| `product_name` | text | |
+| `asset_type` | text NOT NULL | `FUND` / `SAVINGS` / `HOUSING` |
+| `holding_quantity` | numeric NOT NULL | IRP: 좌수 / 적금·청약: 1 |
+| `total_purchase_amount` | numeric NOT NULL | IRP: 매입금액 / 적금·청약: 납입원금 누계 |
+| `multiplier` | numeric NOT NULL | IRP: 0.001 / 적금·청약: 1 |
+| `currency_code` | text | `KRW` |
+| `exchange_code` | text | IRP: `KRX` / 적금·청약: NULL |
+| `price_date` | date NULL | **IRP 전용** — 입력한 평가금액의 NAV 기준일 |
+| `status` | text NOT NULL | `ACTIVE` / `CLOSED` (만기·해지) |
+| `memo` | text | |
+| `insert_datetime` | timestamp DEFAULT now() | |
 
-## 9. 배포 후 검증 절차
+**제약**: `UNIQUE (account_code, product_code, effective_date)`
 
-1. Airflow UI에서 `get_stock_account` → `upload_stock_account` 단일 경로 확인
-2. 1회 수동 실행 후 국내·해외가 **동시에** 존재하는지 확인
+### 설계 원칙
+
+1. **Append-only + 효력일** — 값이 바뀌면 UPDATE가 아니라 새 효력일 행.
+   과거 상태가 보존되므로 "3개월 전 좌수"가 언제나 조회된다
+2. **같은 효력일 재입력은 UPSERT** (`ON CONFLICT DO UPDATE`) — 오타 정정 경로.
+   `asset_daily`의 DELETE+INSERT 멱등성과 같은 사고방식
+3. **조회 규칙** — 기준일 D의 포지션 = `effective_date <= D` 중 계좌·상품별 최신 1행
 
 ```sql
-SELECT standard_date, exchange_code, count(*)
-  FROM account.asset_daily
- WHERE account_code = '<위탁계좌>'
-   AND standard_date >= current_date - 3
- GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT DISTINCT ON (account_code, product_code) *
+  FROM account.manual_position_ledger
+ WHERE effective_date <= :standard_date AND status = 'ACTIVE'
+ ORDER BY account_code, product_code, effective_date DESC
 ```
 
-3. 2~3일 관찰하여 XOR 패턴 소멸 확인
-4. 태스크 로그에 `[재적재]`가 뜨지 않는지 확인 (첫 실행 기준)
+이 쿼리를 `db_manager.get_manual_positions(engine, standard_date)`로 두면
+파생 태스크 3개가 공유한다.
 
 ---
 
-## 10. 소실분 백필 (완료)
+## 3. 수동 입력 DAG — `upsert_manual_position` (신규 1개)
 
-실행일: 2026-08-18 / 대상: `2026-06-21 ~ 2026-08-17`, `<위탁계좌>`
+`schedule=None`, `catchup=False`. 태스크는 `validate` → `upsert` 둘.
 
-### 10.1 방식
+### 입력 Params
 
-carry-forward. 직전에 해당 시장 데이터가 있던 날의 행을 복사하고 `standard_date`만
-교체했다. 잔고 API는 요청 파라미터에 날짜가 없어 과거 시점 조회가 불가능하므로
-원본 복원은 불가능하며, **적재된 208행은 모두 추정치다.**
+| Param | 타입 | 예시 | 비고 |
+|---|---|---|---|
+| `asset_type` | enum | `IRP` / `SAVINGS` / `HOUSING` | 이후 분기를 결정 |
+| `effective_date` | date | `2026-08-24` | IRP는 **결제 완료일** |
+| `holding_quantity` | number | IRP `1023351` / 적금·청약 `1` | |
+| `total_purchase_amount` | number | `1750060` | IRP 매입금액 / 적금·청약 납입원금 누계 |
+| `evaluation_amount` | number, nullable | `1793812` | **IRP 전용, 저장 안 함 — 검증용** |
+| `price_date` | date, nullable | | IRP 전용. 비우면 자동 탐색 |
+| `status` | enum | `ACTIVE` / `CLOSED` | 만기·해지 시 `CLOSED` |
+| `memo` | string, nullable | | |
 
-시장 구분은 `exchange_code = 'KRX'`(국내) / 그 외(해외)로 판정했다.
+`account_code` / `account_name` / `product_code` / `product_name` / `multiplier` /
+`exchange_code`는 **입력받지 않는다.** `asset_type`별 상수이므로 Airflow Variable
+(`MANUAL_IRP`, `MANUAL_SAVINGS`, `MANUAL_HOUSING`)에 두고 조회한다.
+기존 `KIS_STOCK` / `KIS_ISA` Variable 패턴과 동일하고,
+매달 계좌번호를 손으로 치다 오타 내는 경로가 사라진다.
 
-### 10.2 결과
-
-| 항목 | 값 |
-|---|---|
-| 적재 행 수 | **208** (국내 50행·18일 / 해외 158행·23일) |
-| 전체 행 수 | 1695 → 1903 |
-| `insert_datetime` | `2026-08-18 08:34:12.364480` (전 행 동일, 백필분 식별자) |
-| 최대 gap | 4일 |
-
-### 10.3 제외 구간 — `2026-08-11`, `2026-08-12` 해외 (10행)
-
-리밸런싱 신규 매수가 결손 구간에 걸쳐 있어 **의도적으로 비워 두었다.**
+### `validate` 태스크 (IRP)
 
 ```
-08-10 실측  AAPL 1, GOOGL 2, NVDA 3, PLTR 5, SPCX 1          $2,691
-08-11 결손  ← 매수 진행
-08-12 결손  ← 매수 진행
-08-13 실측  AAPL 3, GOOGL 3, NVDA 4, PLTR 5, SPCX 1, ORCL 2  $4,205
+역산 NAV = evaluation_amount / holding_quantity / 0.001
+        = 1,793,812 / 1,023,351 / 0.001 = 1,752.88
+
+→ market.fund_price_daily 에서 product_code 의 기준가 중
+  1,752.88 과 일치하는 standard_date 를 찾아 price_date 확정
+→ 못 찾으면 예외: 펀드코드 오류 또는 크롤링 누락
+→ 오차 0.5원 초과면 예외: 좌수·평가금액 입력 오류
 ```
 
-08-10에서 복사하면 ORCL이 누락되고 총액이 56% 과소평가된다. 매수가 이틀에 걸쳐
-진행되어 08-13에서 역방향 복사해도 과대평가다. **어느 스냅샷도 실제를 대표하지
-않아 결손으로 남겼다.**
+평가금액을 저장하지 않으면서 입력 검증과 `price_date` 자동 확정을 동시에 얻는다.
+IRP 설계에서 가장 위험한 **"기준일을 잘못 잡으면 오차가 전 기간에 곱해지는"**
+문제가 여기서 차단된다. 앱 화면의 평가금액이 며칠자 NAV 기준인지 추측하지 않는다.
 
-제외 규칙: **종목 구성이 바뀐 구간만 제외**한다(없는 종목이 생기거나 있는 종목이
-빠지는 명백한 오류). 수량만 변한 구간은 평가금액 오차와 같은 성격이라 포함했다.
+적금·청약은 검증할 것이 없어 이 태스크를 통과한다.
 
-### 10.4 포함했으나 수량이 부정확한 구간 (23행)
+### 실수 방지 규칙
 
-결손 기간 중 매매가 있었으나 종목 구성은 유지된 경우다.
-
-| 구간 | 수량 변화 | 총액 차이 | 행 |
-|---|---|---:|---:|
-| 07-17 ~ 07-20 KR | 278530 11→14, 292150 70→80 | +10.3% | 12 |
-| 08-13 KR | 0228G0 271→279 | +9.6% | 1 |
-| 06-22 KR | 0180V0 92→82, 292150 68→70 | −8.8% | 3 |
-| 06-23 OV | JOBY 40→41 | −4.2% | 7 |
-
-나머지 185행은 수량이 정확하고 평가금액만 직전 영업일 값이다.
-
-### 10.5 검증 결과 (전 항목 통과)
-
-- 신규 PK 208 / 삭제된 PK 0 / PK 중복 0
-- **기존 1695행 값 변경 0건, `insert_datetime` 변경 0건** — `DELETE` 없이 순수 INSERT
-- 208행 전부 13개 컬럼이 소스일과 완전 일치, 불일치 0건
-- 잔존 결손은 08-11·08-12 해외뿐 (의도한 제외와 일치)
-
-### 10.6 롤백
-
-208행 전부 `insert_datetime`이 동일하므로 `=` 비교가 안전하다.
-
-```sql
-DELETE FROM account.asset_daily
- WHERE account_code    = '<위탁계좌>'
-   AND insert_datetime = TIMESTAMP '2026-08-18 08:34:12.364480'
-   AND standard_date BETWEEN '2026-06-21' AND '2026-08-17';
-```
-
-### 10.7 조회 측 후속 조치 필요
-
-- **08-11 ~ 08-12는 해외가 비어 있어** 대시보드에서 총액이 급락으로 보인다.
-  직전 영업일 보간 또는 구간 분리 표시가 필요하다.
-- 백필분 208행은 추정치다. `insert_datetime`만으로 구분하는 것은 향후 재적재와
-  뒤섞일 수 있으므로 `is_estimated boolean` 컬럼 추가를 권한다.
+- `total_purchase_amount`가 직전 원장값보다 **감소**하면 경고
+  (적금·청약 납입원금 누계는 단조증가여야 한다)
+- IRP 좌수가 감소하면 매도 여부를 `memo`에 요구
 
 ---
 
-## 11. 남은 과제
+## 4. `fetch_asset_daily` 확장 — 원장을 읽어 매일 계산
 
-- **`requirements.txt` 버전 핀 부재** — `pandas`, `numpy` 등 전부 핀이 없어 Docker
-  재빌드 시 pandas 3.x가 유입될 수 있다. 위 concat 실측은 2.1.4 기준이다.
-  **우선순위 높음.**
-- **`2026-06-06`, `2026-06-13` 전체 결손** 원인 조사 (리팩터링 이전 건, 별개 사유).
-- **`is_estimated` 컬럼 추가** — 백필 208행이 추정치라는 사실을 데이터에 남긴다.
-- **UPSERT 전환 검토** — 도입 시 "종목 감소 재시도" 처리 방식 설계 필요.
-- **미배포** — 이 브랜치가 머지·배포되기 전까지는 매일 결손이 계속 발생한다.
+기존 불변식 **한 `account_code` = 한 get/upload 페어**를 그대로 지켜 3쌍을 추가한다.
+
+| 신규 태스크 | 읽는 것 | 계산 |
+|---|---|---|
+| `get_irp_assets` | 원장 + `fund_price_daily` | 좌수 × NAVᵗ × 0.001 |
+| `get_savings_assets` | 원장 | 원금 캐리 |
+| `get_housing_assets` | 원장 | 원금 캐리 |
+
+`upload_asset_group`에 `upload_irp_assets` / `upload_savings_assets` /
+`upload_housing_assets` 3개를 `upload_account.override(...)`로 추가한다.
+**`upload_account` 함수 자체는 수정 불필요** — 이미 `{account_code, records}`
+계약이라 그대로 재사용된다.
+
+### 계산식 → `BalanceRecord`
+
+**IRP**
+```
+unit_market_price       = NAVᵗ                    (fund_price_daily, T-1)
+total_evaluation_amount = 좌수 × NAVᵗ × 0.001
+unit_purchase_price     = 매입금액 ÷ 좌수 ÷ 0.001   = 1,710.13
+total_purchase_amount   = 원장값 그대로             = 1,750,060
+total_profit_amount     = 평가 − 매입
+valuation_profit_rate   = 손익 ÷ 매입 × 100
+multiplier=0.001, asset_type='FUND', currency_code='KRW', exchange_code='KRX'
+```
+
+**적금·청약**
+```
+holding_quantity        = 1
+unit_market_price       = 원금
+unit_purchase_price     = 원금
+total_evaluation_amount = 원금
+total_purchase_amount   = 원금
+total_profit_amount     = 0      (이자는 만기에 계산되므로 미반영)
+valuation_profit_rate   = 0
+multiplier=1, currency_code='KRW'
+```
+
+적금·청약은 `transform_cma_cash_balance`가 이미 하는 처리
+(수량 개념 없음 → `holding_quantity=1`, `unit_*_price=평가금액`)와 동일하다.
+
+### 배치 위치
+
+변환 로직은 DB 뷰가 아니라
+`plugins/asset_flow/transformers/ledger_transformer.py` 신규 모듈에 둔다.
+`kis_transformer` / `upbit_transformer`와 대칭이고 단위 테스트가 가능하다.
+
+### 반드시 지킬 것
+
+- **`get_X`는 원장 조회 0건이면 예외.** 빈 DataFrame을 반환하면 `upload_account`가
+  DELETE만 수행해 기존 적재분이 사라진다 (모듈 docstring [빈 응답] 규칙)
+- **IRP는 `wait_for_fund_price_daily` 뒤에.** 센서가 이미 있고 `get_standard_date`로
+  체인되므로 추가 배선은 불필요
+- **`asset_daily`에 `source` 컬럼**(`API` / `LEDGER`) 추가 권고 —
+  값이 이상할 때 원인 계층을 즉시 좁힌다
+- **원장은 `asset_daily`를 직접 쓰지 않는다.** 원장에 쓰는 주체와 `asset_daily`에
+  쓰는 주체를 분리해야 계좌당 단일 writer 불변식이 유지된다
+
+---
+
+## 5. 백필 DAG — `rebuild_derived_assets` (신규 1개)
+
+`schedule=None`, params `start_date` / `end_date`.
+날짜를 순회하며 파생 3계좌만 재계산해 `delete_and_insert_account_assets`로 재적재한다.
+
+원장 한 줄을 정정하면(예: `price_date` 오류로 좌수가 틀렸던 경우)
+이 DAG로 영향 구간 전체가 복구된다. 백필이 순수 함수 `f(원장, 날짜) → 행`이므로
+몇 번을 돌려도 같은 결과가 나온다.
+
+`fetch_asset_daily`는 `catchup=False`에 T-1 하드코딩이고 KIS·Upbit는 과거 잔고
+조회가 불가능하다. **백필 가능한 자산과 불가능한 자산의 경계를 DAG 단위로
+못 박아 두는 것**이 이 DAG의 진짜 목적이다.
+
+---
+
+## 6. 구현 순서
+
+| # | 작업 | 검증 |
+|---|---|---|
+| 1 | `fetch_fund_price_daily`의 `fund_codes`에 IRP 펀드코드 추가 | 크롤링 NAV ≈ 1,752.88 |
+| 2 | `account.manual_position_ledger` 테이블 생성 | |
+| 3 | `db_manager.get_manual_positions()` 추가 | |
+| 4 | `upsert_manual_position` DAG + Variable 3개 | IRP 1행 입력 → `validate` 통과 |
+| 5 | `ledger_transformer.py` | 단위 테스트 |
+| 6 | `fetch_asset_daily`에 get/upload 3쌍 | 하루 적재 후 `asset_daily` 확인 |
+| 7 | `rebuild_derived_assets` | 원장 효력일 이후 구간 백필 |
+
+1번을 먼저 하는 이유는, IRP 펀드의 NAV가 며칠 쌓여 있어야 4번의 `validate`가
+`price_date`를 탐색할 수 있기 때문이다.
+**1번과 2~3번을 먼저 배포하고 며칠 뒤 나머지를 올리는 것이 안전하다.**
+
+---
+
+## 7. 미결 사항
+
+### NAV 결측 시 IRP 평가 정책 (6번 착수 전 결정)
+
+주말·공휴일에는 `market.fund_price_daily`에 T-1 행이 없다.
+기존 `get_pension_assets`는 `get_fund_price`가 `(None, None)`을 반환하면
+좌수를 0으로 만든다(`kis_transformer.py:167`). 그러나 IRP는 좌수가 원장에서 오므로
+**직전 영업일 NAV로 캐리**하는 것이 맞다.
+
+연금저축이 휴일에 실제로 어떻게 적재되고 있는지 데이터를 확인한 뒤 정하고,
+두 계좌에 **동일하게** 적용할 것. 여기서 동작이 갈리면 이후 디버깅이 혼란스러워진다.
+
+### T+3 결제 구간 자산 공백 (수용하기로 결정)
+
+이체일 ~ 결제일 3영업일 동안 그 돈은 출금 계좌에도 IRP 좌수에도 잡히지 않는다.
+월 1회·3영업일·신규 납입액 한정이라 영향은 작으나,
+**매달 같은 시기에 자산 곡선이 움푹 패이는 패턴**으로 나타난다.
+정확히 잡으려면 이체일에 `asset_type='CASH'` 원장 행을 넣고 결제일에 종료해야 하지만
+입력이 두 번이 되므로 채택하지 않았다.
+몇 달 뒤 "매달 25일쯤 자산이 왜 줄지?"를 다시 조사하지 않도록 이 문단을 근거로 남긴다.
