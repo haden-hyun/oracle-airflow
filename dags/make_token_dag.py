@@ -33,6 +33,7 @@ default_args = {
     dag_id='make_token',
     default_args=default_args,
     description='매일 06:50 KIS/Upbit 토큰 발급 및 파일 저장',
+    doc_md=__doc__,
     schedule='50 6 * * *',
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     on_success_callback=slack_recovery_callback,

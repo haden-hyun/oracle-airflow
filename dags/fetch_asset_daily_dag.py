@@ -3,7 +3,7 @@
 
 keywords: asset, portfolio, KIS, Upbit, stock, fund, CMA, crypto, PostgreSQL, daily snapshot
 
-매일 07:00 KST에 실행되어 6개 자산 유형의 전일(T-1) 기준 잔고를 수집하고
+매일 07:00 KST에 실행되어 10개 자산 유형의 전일(T-1) 기준 잔고를 수집하고
 account.asset_daily 테이블에 계좌 단위로 적재한다.
 
 수집 자산:
@@ -12,6 +12,11 @@ account.asset_daily 테이블에 계좌 단위로 적재한다.
     - 연금저축 펀드 + 주식 (KIS_PENSION, TR: CTRP6548R + TTTC8434R)
     - CMA 현금 (KIS_ISA/KIS_CMA, TR: CTRP6548R)
     - 가상자산 (Upbit, /v1/accounts + /v1/candles/days)
+    - IRP·DC 펀드 (account.manual_position_ledger 원장 좌수 × market.fund_price_daily NAV)
+    - 적금·주택청약 (account.manual_position_ledger 원장 원금 캐리)
+
+IRP·DC·적금·청약은 API 수집이 아니라 수동 입력 원장(manual_position_ledger,
+upsert_manual_position DAG로 월 1회 갱신)을 매일 읽어 파생시킨다.
 
 스케줄: 매일 07:00 KST (cron: '0 7 * * *')
 의존성: fetch_exchange_rate, fetch_fund_price_daily (ExternalTaskSensor)
@@ -60,7 +65,8 @@ default_args = {
 @dag(
     dag_id='fetch_asset_daily',
     default_args=default_args,
-    description='매일 07:00 자산 현황 수집 및 DB 적재 (해외주식/국내주식/ISA/연금저축/CMA)',
+    description='매일 07:00 자산 현황 수집 및 DB 적재 (KIS/Upbit API + IRP·DC·적금·청약 수동 원장)',
+    doc_md=__doc__,
     schedule='0 7 * * *',
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,
@@ -269,12 +275,94 @@ def fetch_asset_daily_dag():
             print(f"Upbit 수집: {len(df)}건")
             return {"account_code": account_code, "records": df.to_dict('records')}
 
+        @task(task_id='get_irp_assets', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
+        def get_irp_assets(dates: dict) -> dict:
+            """IRP 계좌 평가 — 원장 좌수 × NAV × 0.001. NAV 없으면 예외."""
+            from asset_flow.managers.db_manager import get_manual_positions, get_fund_price
+            from asset_flow.transformers.ledger_transformer import transform_fund_position
+
+            pg_hook = PostgresHook(postgres_conn_id='postgres_asset')
+            engine = pg_hook.get_sqlalchemy_engine()
+
+            positions = get_manual_positions(engine, dates["standard_date"])
+            irp = positions[positions["account_type"] == "IRP"]
+            if irp.empty:
+                raise AirflowException("IRP 원장 데이터 없음 — 빈 응답")
+            row = irp.iloc[0].to_dict()
+
+            fund_price, product_name = get_fund_price(engine, row["product_code"], dates["standard_date"])
+            df = transform_fund_position(row, dates["standard_date"], fund_price, product_name)
+            print(f"IRP 평가: {len(df)}건")
+            return {"account_code": row["account_code"], "records": df.to_dict('records')}
+
+        @task(task_id='get_dc_assets', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
+        def get_dc_assets(dates: dict) -> dict:
+            """DC 계좌 평가 — IRP와 계산식 동일(같은 펀드 K55105D43299 공유)."""
+            from asset_flow.managers.db_manager import get_manual_positions, get_fund_price
+            from asset_flow.transformers.ledger_transformer import transform_fund_position
+
+            pg_hook = PostgresHook(postgres_conn_id='postgres_asset')
+            engine = pg_hook.get_sqlalchemy_engine()
+
+            positions = get_manual_positions(engine, dates["standard_date"])
+            dc = positions[positions["account_type"] == "DC"]
+            if dc.empty:
+                raise AirflowException("DC 원장 데이터 없음 — 빈 응답")
+            row = dc.iloc[0].to_dict()
+
+            fund_price, product_name = get_fund_price(engine, row["product_code"], dates["standard_date"])
+            df = transform_fund_position(row, dates["standard_date"], fund_price, product_name)
+            print(f"DC 평가: {len(df)}건")
+            return {"account_code": row["account_code"], "records": df.to_dict('records')}
+
+        @task(task_id='get_savings_assets', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
+        def get_savings_assets(dates: dict) -> dict:
+            """청년미래적금 평가 — 원금 캐리(CMA와 동일 패턴)"""
+            from asset_flow.managers.db_manager import get_manual_positions
+            from asset_flow.transformers.ledger_transformer import transform_cash_position
+
+            pg_hook = PostgresHook(postgres_conn_id='postgres_asset')
+            engine = pg_hook.get_sqlalchemy_engine()
+
+            positions = get_manual_positions(engine, dates["standard_date"])
+            savings = positions[positions["account_type"] == "INSTALLMENT_SAVINGS"]
+            if savings.empty:
+                raise AirflowException("적금 원장 데이터 없음 — 빈 응답")
+            row = savings.iloc[0].to_dict()
+
+            df = transform_cash_position(row, dates["standard_date"])
+            print(f"적금 평가: {len(df)}건")
+            return {"account_code": row["account_code"], "records": df.to_dict('records')}
+
+        @task(task_id='get_housing_assets', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
+        def get_housing_assets(dates: dict) -> dict:
+            """청년주택드림청약 평가 — 원금 캐리(CMA와 동일 패턴)"""
+            from asset_flow.managers.db_manager import get_manual_positions
+            from asset_flow.transformers.ledger_transformer import transform_cash_position
+
+            pg_hook = PostgresHook(postgres_conn_id='postgres_asset')
+            engine = pg_hook.get_sqlalchemy_engine()
+
+            positions = get_manual_positions(engine, dates["standard_date"])
+            housing = positions[positions["account_type"] == "HOUSING_SUBSCRIPTION"]
+            if housing.empty:
+                raise AirflowException("청약 원장 데이터 없음 — 빈 응답")
+            row = housing.iloc[0].to_dict()
+
+            df = transform_cash_position(row, dates["standard_date"])
+            print(f"청약 평가: {len(df)}건")
+            return {"account_code": row["account_code"], "records": df.to_dict('records')}
+
         return {
             'stock': get_stock_account(dates),
             'isa_stock': get_isa_stock(dates),
             'pension': get_pension_assets(dates),
             'cma_cash': get_cma_cash(dates),
             'upbit': get_upbit_assets(dates),
+            'irp': get_irp_assets(dates),
+            'dc': get_dc_assets(dates),
+            'savings': get_savings_assets(dates),
+            'housing': get_housing_assets(dates),
         }
 
     @task(trigger_rule=TriggerRule.ALL_DONE)
@@ -319,6 +407,10 @@ def fetch_asset_daily_dag():
         upload_account.override(task_id='upload_pension_assets')(dates, get_results['pension'])
         upload_account.override(task_id='upload_cma_cash')(dates, get_results['cma_cash'])
         upload_account.override(task_id='upload_upbit_assets')(dates, get_results['upbit'])
+        upload_account.override(task_id='upload_irp_assets')(dates, get_results['irp'])
+        upload_account.override(task_id='upload_dc_assets')(dates, get_results['dc'])
+        upload_account.override(task_id='upload_savings_assets')(dates, get_results['savings'])
+        upload_account.override(task_id='upload_housing_assets')(dates, get_results['housing'])
 
     # 의존성 구성
     dates = get_standard_date()

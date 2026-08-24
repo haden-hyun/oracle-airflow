@@ -39,6 +39,7 @@ default_args = {
     dag_id='fetch_fund_price_daily',
     default_args=default_args,
     description='매일 06:55 펀드 기준가 크롤링 및 DB 적재 (fundguide.net)',
+    doc_md=__doc__,
     schedule='55 6 * * *',
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,

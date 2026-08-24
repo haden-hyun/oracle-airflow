@@ -58,6 +58,30 @@ def get_fund_price(
     return float(row.standard_price), row.product_name
 
 
+def get_manual_positions(engine: Engine, standard_date: str) -> pd.DataFrame:
+    """기준일 D 시점에 유효한 수동 자산 포지션을 계좌별 1행씩 반환한다.
+
+    수동 자산(IRP·DC·적금·주택청약)은 원장에 월 1회만 행이 생기므로,
+    이 함수가 계좌별로 standard_date 이하 중 가장 최근 원장 행을 골라
+    "D 시점에 유효한 포지션"을 채워 넣는다. 해지 계좌(is_active=false)는 제외한다.
+
+    조회 결과가 없으면 빈 DataFrame을 반환한다. 예외는 호출자(get_X)가 던진다.
+    """
+    query = text("""
+        SELECT DISTINCT ON (l.account_code)
+               l.standard_date, l.account_code, l.product_code,
+               l.holding_quantity, l.total_purchase_amount,
+               m.account_name, m.account_type
+          FROM account.manual_position_ledger l
+          JOIN account.account_master m USING (account_code)
+         WHERE l.standard_date <= :standard_date
+           AND m.is_active
+         ORDER BY l.account_code, l.standard_date DESC
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(query, conn, params={"standard_date": standard_date})
+
+
 def delete_and_insert_account_assets(
     engine: Engine,
     schema: str,

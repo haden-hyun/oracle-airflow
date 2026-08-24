@@ -31,7 +31,8 @@ asset_flow/
 └── transformers/
     ├── base_transformer.py     # 숫자 정규화 공통 함수
     ├── kis_transformer.py      # KIS 원시 응답 → DataFrame 변환
-    └── upbit_transformer.py    # Upbit 원시 응답 → DataFrame 변환
+    ├── upbit_transformer.py    # Upbit 원시 응답 → DataFrame 변환
+    └── ledger_transformer.py   # 수동 원장(manual_position_ledger) → DataFrame 변환
 ```
 
 ---
@@ -174,6 +175,8 @@ KIS·Upbit API 토큰을 날짜 기반 파일(`data/tokens/YYYYMMDD_token.json`)
 | 함수 | 설명 |
 |---|---|
 | `get_fund_price(engine, product_code, standard_date)` | `market.fund_price_daily`에서 기준가·종목명 반환. 데이터 없으면 `(None, None)` |
+| `get_manual_positions(engine, standard_date)` | `account.manual_position_ledger`에서 기준일 시점 유효한 계좌별 포지션 1행씩 반환 (`standard_date` 이하 중 최신 행) |
+| `delete_and_insert_account_assets(engine, schema, table_name, standard_date, account_code, records)` | `(standard_date, account_code)` 스코프로 DELETE 후 INSERT — 계좌 단위 멱등 적재 |
 
 ---
 
@@ -201,3 +204,12 @@ KIS·Upbit API 토큰을 날짜 기반 파일(`data/tokens/YYYYMMDD_token.json`)
 | `transform_upbit_balance(balance_raw, market_code_raw, price_raw, standard_date, account_code, account_name)` | 잔고·마켓코드·일 캔들 종가 3개 응답을 병합해 암호화폐 잔고 DataFrame 생성. `asset_type="CRYPTO"` |
 
 > `price_raw`는 `/v1/candles/days` 응답(T-1 종가)을 사용합니다. `trade_price` 필드명이 ticker 응답과 동일하므로 transformer 변경 없이 호환됩니다.
+
+### `ledger_transformer.py`
+
+API 호출 없이 `get_manual_positions()` 결과(dict)를 받아 변환하는 순수 함수입니다.
+
+| 함수 | 입력 | 설명 |
+|---|---|---|
+| `transform_fund_position(row, standard_date, fund_price, product_name)` | 원장 행 + NAV | IRP·DC 변환. 좌수 × NAV × 0.001. `fund_price`가 None이면 `ValueError` |
+| `transform_cash_position(row, standard_date)` | 원장 행 | 적금·주택청약 변환. 원금을 그대로 캐리(`holding_quantity=1`), `asset_type="CASH"` |

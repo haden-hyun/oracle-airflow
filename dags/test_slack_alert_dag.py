@@ -29,6 +29,7 @@ default_args = {
     dag_id='test_slack_alert',
     default_args=default_args,
     description='Slack 실패/복구 알람 콜백 테스트용 DAG',
+    doc_md=__doc__,
     schedule=None,
     start_date=datetime(2024, 1, 1, tzinfo=kst),
     catchup=False,

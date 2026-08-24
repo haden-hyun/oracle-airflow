@@ -125,7 +125,8 @@ def transform_pension_fund_balance(
         holding_quantity   = 평가금액 / fund_price / 0.001
         unit_purchase_price = 매입금액 / holding_quantity / 0.001
 
-    fund_price가 None이면 holding_quantity, unit_purchase_price를 0으로 설정한다.
+    fund_price가 None이면 예외를 던진다. 좌수 자체가 평가금액의 역산 결과라
+    NAV 없이는 계산할 방법이 없다 — 직전 값으로 채우지 않는다.
 
     Args:
         raw: KIS get_account_balance() 원시 JSON
@@ -137,9 +138,15 @@ def transform_pension_fund_balance(
 
     Returns:
         BALANCE_COLUMNS 스키마의 단일 행 DataFrame
+
+    Raises:
+        ValueError: fund_price가 None이거나 0일 때
     """
     account_code = f"{config['account']}-{config['product_code']}"
     account_name = config["type"]
+
+    if not fund_price:
+        raise ValueError(f"fund_price가 없다 — {account_code} 평가 불가 (NAV 결측)")
     df = pd.json_normalize(raw["output1"])
     # index 1 = "펀드/MMW" 행 (KIS API 응답 순서 고정)
     df = df.loc[[1]].rename(columns=KIS_RENAME["account_balance"])
@@ -161,12 +168,8 @@ def transform_pension_fund_balance(
         multiplier=0.001,
     )
 
-    if fund_price:
-        df["holding_quantity"] = (df["total_evaluation_amount"] / fund_price / 0.001).round(0)
-        df["unit_purchase_price"] = (df["total_purchase_amount"] / df["holding_quantity"] / 0.001).round(0)
-    else:
-        df["holding_quantity"] = 0.0
-        df["unit_purchase_price"] = 0.0
+    df["holding_quantity"] = (df["total_evaluation_amount"] / fund_price / 0.001).round(0)
+    df["unit_purchase_price"] = (df["total_purchase_amount"] / df["holding_quantity"] / 0.001).round(0)
 
     if (df["total_purchase_amount"] > 0).all():
         df["valuation_profit_rate"] = (df["total_profit_amount"] / df["total_purchase_amount"] * 100).round(2)
