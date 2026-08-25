@@ -113,6 +113,8 @@ evaluation_amount = 2085430   # validate 태스크가 좌수 오타를 이 값�
 - 같은 `(standard_date, account_code)`로 다시 트리거하면 오타 정정으로 간주해 덮어쓴다(UPSERT).
 - `total_purchase_amount`/`holding_quantity`는 회차 금액이 아니라 **그 시점까지의 누적값**이다.
 - `validate` 태스크가 좌수 × NAV × multiplier와 `evaluation_amount`를 대조해 1% 초과 오차면 실패시킨다.
+- 단, 당일 입력은 그날 기준가가 아직 없으므로(D 기준가는 D+1 06:55 크롤링) 역산값을 최신 기준가와
+  대조하는 자릿수 검증으로 대체된다. `evaluation_amount`를 비우면 매입원금으로 검증한다.
 
 ---
 
