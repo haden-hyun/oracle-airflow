@@ -119,7 +119,8 @@ class TokenManager:
                 # "KIS_GOLD": self._get_kis_token("KIS_GOLD"),
                 "KIS_STOCK": self._get_kis_token("KIS_STOCK"),
                 "KIS_ISA": self._get_kis_token("KIS_ISA"),
-                "KIS_PENSION": self._get_kis_token("KIS_PENSION"),
+                "KIS_PENSION_DEDUCTIBLE": self._get_kis_token("KIS_PENSION_DEDUCTIBLE"),
+                "KIS_PENSION_NON_DEDUCTIBLE": self._get_kis_token("KIS_PENSION_NON_DEDUCTIBLE"),
                 "KIS_IRP": self._get_kis_token("KIS_IRP"),
                 "UPBIT": self._get_upbit_token("UPBIT"),
             }
@@ -139,7 +140,8 @@ class TokenManager:
         파일이 없으면 TokenGenerator()를 호출하여 먼저 발급한 뒤 반환한다.
 
         Returns:
-            dict: {KIS_STOCK, KIS_ISA, KIS_PENSION, KIS_IRP, UPBIT} 액세스 토큰 맵
+            dict: {KIS_STOCK, KIS_ISA, KIS_PENSION_DEDUCTIBLE,
+                   KIS_PENSION_NON_DEDUCTIBLE, KIS_IRP, UPBIT} 액세스 토큰 맵
         """
         if not os.path.exists(self.TOKEN_FILE_PATH):
             self.TokenGenerator()
