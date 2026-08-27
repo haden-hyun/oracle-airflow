@@ -3,13 +3,14 @@
 
 keywords: asset, portfolio, KIS, Upbit, stock, fund, CMA, crypto, PostgreSQL, daily snapshot
 
-매일 07:00 KST에 실행되어 10개 자산 유형의 전일(T-1) 기준 잔고를 수집하고
+매일 07:00 KST에 실행되어 11개 자산 유형의 전일(T-1) 기준 잔고를 수집하고
 account.asset_daily 테이블에 계좌 단위로 적재한다.
 
 수집 자산:
     - 위탁계좌 주식 (KIS_STOCK, TR: TTTS3012R 해외 + TTTC8434R 국내)
     - ISA 주식 (KIS_ISA, TR: TTTC8434R)
-    - 연금저축 펀드 + 주식 (KIS_PENSION, TR: CTRP6548R + TTTC8434R)
+    - 연금저축(세액공제) 펀드 + 주식 (KIS_PENSION_DEDUCTIBLE, TR: CTRP6548R + TTTC8434R)
+    - 연금저축(비공제)  펀드 + 주식 (KIS_PENSION_NON_DEDUCTIBLE, 위와 동일 로직·동일 펀드)
     - CMA 현금 (KIS_ISA/KIS_CMA, TR: CTRP6548R)
     - 가상자산 (Upbit, /v1/accounts + /v1/candles/days)
     - IRP·DC 펀드 (account.manual_position_ledger 원장 좌수 × market.fund_price_daily NAV)
@@ -63,15 +64,15 @@ default_args = {
 
 DAG_DOC = """
 ### 목적
-전 계좌(API 5종 + 원장 기반 4종, 총 10개 자산)의 그날 잔고·평가금액을 계산해
+전 계좌(API 6종 + 원장 기반 4종, 총 11개 자산)의 그날 잔고·평가금액을 계산해
 `account.asset_daily`에 적재하는 메인 파이프라인이다.
 
 ### Pipeline
 1. `wait_for_exchange_rate` / `wait_for_fund_price_daily`: 환율·펀드기준가 DAG 완료 대기
 2. `get_standard_date`: 기준일(T-1)과 Upbit 캔들 경계값(T) 계산
-3. **조회 단계** (`get_daily_asset_group`, 9개 태스크 병렬): 계좌별로 잔고를 조회해
+3. **조회 단계** (`get_daily_asset_group`, 10개 태스크 병렬): 계좌별로 잔고를 조회해
    `{account_code, records}` 형태로 반환. 하나가 실패해도 나머지는 계속 진행된다
-4. **적재 단계** (`upload_asset_group`, 9개 태스크): 계좌별로 `(standard_date, account_code)`
+4. **적재 단계** (`upload_asset_group`, 10개 태스크): 계좌별로 `(standard_date, account_code)`
    스코프 DELETE 후 INSERT. 조회가 실패한 계좌는 적재를 건너뛰어 기존 데이터를 보존한다
 
 ### Task — 조회(get) / 적재(upload) 페어
@@ -79,7 +80,8 @@ DAG_DOC = """
 |---|---|---|
 | 위탁계좌 | `get_stock_account` / `upload_stock_account` | KIS 해외+국내 주식 잔고 |
 | ISA | `get_isa_stock` / `upload_isa_stock` | KIS 국내 주식 잔고 |
-| 연금저축 | `get_pension_assets` / `upload_pension_assets` | KIS 잔고 + NAV로 좌수 역산(평가금액→좌수) |
+| 연금저축(공제) | `get_pension_deductible` / `upload_pension_deductible` | KIS 잔고 + NAV로 좌수 역산(평가금액→좌수) |
+| 연금저축(비공제) | `get_pension_non_deductible` / `upload_pension_non_deductible` | 위와 동일 로직·동일 펀드, Variable만 다름 |
 | CMA | `get_cma_cash` / `upload_cma_cash` | KIS 계좌잔고 중 현금성 자산 |
 | 업비트 | `get_upbit_assets` / `upload_upbit_assets` | Upbit 잔고 + 당일 캔들 |
 | IRP | `get_irp_assets` / `upload_irp_assets` | 원장 좌수 × NAV(좌수→평가금액, 연금저축과 반대 방향) |
@@ -91,6 +93,8 @@ DAG_DOC = """
 - 조회 결과가 0건이면 예외를 던진다 — 빈 결과를 그대로 넘기면 적재 단계가 DELETE만
   수행해 기존 데이터가 사라지기 때문이다.
 - IRP·DC·연금저축은 그날 NAV가 없으면 직전 값으로 채우지 않고 그 계좌만 실패 처리한다.
+  단 연금저축에서 펀드를 보유하지 않은 계좌는 NAV를 쓰지 않으므로 NAV 결측과 무관하게
+  주식만 적재한다(펀드 보유 여부를 NAV 검증보다 먼저 판정한다).
 - 계좌 하나의 실패가 다른 계좌 적재를 막지 않는다(계좌당 단일 get/upload 페어 불변식).
 """
 
@@ -112,7 +116,7 @@ DAG_DOC = """
         }),
         'pension_fund_code': Param(
             'K553W5E17401',
-            description='연금저축 펀드 표준코드',
+            description='연금저축 펀드 표준코드 (세액공제·비공제 계좌 공용 — 한쪽만 다른 펀드로 갈아타면 계좌별로 분리해야 한다)',
         ),
     },
 )
@@ -213,8 +217,18 @@ def fetch_asset_daily_dag():
             print(f"ISA 주식 수집: {len(df)}건")
             return {"account_code": account_code, "records": df.to_dict('records')}
 
-        @task(task_id='get_pension_assets', retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
-        def get_pension_assets(dates: dict) -> dict:
+        @task(retries=3, retry_delay=timedelta(seconds=20), retry_exponential_backoff=True)
+        def get_pension_assets(dates: dict, variable_name: str) -> dict:
+            """
+            연금저축 계좌(세액공제/비공제)의 펀드 + 국내주식 수집
+
+            공제·비공제 두 계좌는 로직이 완전히 같고 Variable 이름만 다르다.
+            variable_name을 인자로 받아 override(task_id=...)로 두 번 인스턴스화한다.
+            토큰 딕셔너리 키도 Variable 이름과 같은 규약을 따른다(token_manager).
+
+            펀드 미보유 계좌는 transform_pension_fund_balance가 빈 DataFrame을
+            돌려주므로 주식 행만 적재된다 — 첫 매수 후 별도 조치 없이 펀드가 붙는다.
+            """
             from asset_flow.clients.kis_client import KISApiClient
             from asset_flow.managers.token_manager import TokenManager
             from asset_flow.managers.db_manager import get_fund_price
@@ -225,7 +239,7 @@ def fetch_asset_daily_dag():
             from airflow.models import Variable
 
             tokens = TokenManager().GetTokens()
-            config = Variable.get('KIS_PENSION', deserialize_json=True)
+            config = Variable.get(variable_name, deserialize_json=True)
             account_code = f"{config['account']}-{config['product_code']}"
             pension_fund_code = get_current_context().get('params')['pension_fund_code']
 
@@ -233,7 +247,7 @@ def fetch_asset_daily_dag():
             engine = pg_hook.get_sqlalchemy_engine()
             fund_price, product_name = get_fund_price(engine, pension_fund_code, dates["standard_date"])
 
-            kis = KISApiClient(tokens['KIS_PENSION'], config)
+            kis = KISApiClient(tokens[variable_name], config)
 
             account_balance_raw = kis.get_account_balance()
             pension_fund_df = transform_pension_fund_balance(
@@ -252,9 +266,9 @@ def fetch_asset_daily_dag():
 
             pension_df = pd.concat([pension_fund_df, pension_stock_df], ignore_index=True)
             if pension_df.empty:
-                raise AirflowException("연금저축 데이터 없음 — 빈 응답")
+                raise AirflowException(f"연금저축({variable_name}) 데이터 없음 — 빈 응답")
             print(
-                f"연금저축 수집: {len(pension_df)}건 "
+                f"연금저축({variable_name}) 수집: {len(pension_df)}건 "
                 f"(펀드: {len(pension_fund_df)}, 주식: {len(pension_stock_df)})"
             )
             return {"account_code": account_code, "records": pension_df.to_dict('records')}
@@ -389,7 +403,10 @@ def fetch_asset_daily_dag():
         return {
             'stock': get_stock_account(dates),
             'isa_stock': get_isa_stock(dates),
-            'pension': get_pension_assets(dates),
+            'pension_deductible': get_pension_assets.override(
+                task_id='get_pension_deductible')(dates, 'KIS_PENSION_DEDUCTIBLE'),
+            'pension_non_deductible': get_pension_assets.override(
+                task_id='get_pension_non_deductible')(dates, 'KIS_PENSION_NON_DEDUCTIBLE'),
             'cma_cash': get_cma_cash(dates),
             'upbit': get_upbit_assets(dates),
             'irp': get_irp_assets(dates),
@@ -437,7 +454,8 @@ def fetch_asset_daily_dag():
     def upload_asset_group(dates: dict, get_results: dict):
         upload_account.override(task_id='upload_stock_account')(dates, get_results['stock'])
         upload_account.override(task_id='upload_isa_stock')(dates, get_results['isa_stock'])
-        upload_account.override(task_id='upload_pension_assets')(dates, get_results['pension'])
+        upload_account.override(task_id='upload_pension_deductible')(dates, get_results['pension_deductible'])
+        upload_account.override(task_id='upload_pension_non_deductible')(dates, get_results['pension_non_deductible'])
         upload_account.override(task_id='upload_cma_cash')(dates, get_results['cma_cash'])
         upload_account.override(task_id='upload_upbit_assets')(dates, get_results['upbit'])
         upload_account.override(task_id='upload_irp_assets')(dates, get_results['irp'])

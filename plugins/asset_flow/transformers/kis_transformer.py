@@ -8,7 +8,7 @@ KIS API 각 TR_ID의 응답 JSON을 받아 account.asset_daily / market.exchange
 제공 함수:
     - transform_domestic_balance(): 국내주식 잔고 변환 (TTTC8434R output1)
     - transform_overseas_balance(): 해외주식 잔고 변환 (TTTS3012R output1)
-    - transform_pension_fund_balance(): 연금저축 펀드 잔고 변환 및 좌수·매입단가 역산 (CTRP6548R output1[1])
+    - transform_pension_fund_balance(): 연금저축 펀드 잔고 변환 및 좌수·매입단가 역산 (CTRP6548R output1[1], 미보유 시 빈 DF)
     - transform_cma_cash_balance(): CMA 현금 잔고 변환 (CTRP6548R output1[14])
     - transform_exchange_rate(): 환율 변환 및 교차 환산 (FHKST03030100)
 """
@@ -128,6 +128,13 @@ def transform_pension_fund_balance(
     fund_price가 None이면 예외를 던진다. 좌수 자체가 평가금액의 역산 결과라
     NAV 없이는 계산할 방법이 없다 — 직전 값으로 채우지 않는다.
 
+    [펀드 미보유] 펀드/MMW 행이 없거나 평가금액이 0이면 빈 DataFrame을 반환한다.
+    좌수는 평가금액의 역산 결과라, 평가금액 0은 곧 좌수 0이고 매입단가 역산이
+    0으로 나누어진다(NaN/inf). 보유하지 않은 자산은 행을 만들지 않는 것이 맞다.
+
+    [검증 순서] 펀드 보유 여부를 fund_price 검증보다 먼저 판정한다. 순서가 반대면
+    펀드를 하나도 안 든 계좌가 그날 NAV 결측만으로 실패한다 — 쓰지도 않는 값이다.
+
     Args:
         raw: KIS get_account_balance() 원시 JSON
         standard_date: 기준일자 (YYYY-MM-DD)
@@ -137,23 +144,31 @@ def transform_pension_fund_balance(
         product_name: 펀드명 (없으면 None)
 
     Returns:
-        BALANCE_COLUMNS 스키마의 단일 행 DataFrame
+        BALANCE_COLUMNS 스키마의 단일 행 DataFrame.
+        펀드 미보유 시 같은 스키마의 빈 DataFrame.
 
     Raises:
-        ValueError: fund_price가 None이거나 0일 때
+        ValueError: 펀드를 보유했는데 fund_price가 None이거나 0일 때
     """
     account_code = f"{config['account']}-{config['product_code']}"
     account_name = config["type"]
 
-    if not fund_price:
-        raise ValueError(f"fund_price가 없다 — {account_code} 평가 불가 (NAV 결측)")
-    df = pd.json_normalize(raw["output1"])
+    rows = raw.get("output1") or []
     # index 1 = "펀드/MMW" 행 (KIS API 응답 순서 고정)
-    df = df.loc[[1]].rename(columns=KIS_RENAME["account_balance"])
+    if len(rows) < 2:
+        return pd.DataFrame(columns=BALANCE_COLUMNS)
+
+    df = pd.json_normalize(rows).loc[[1]].rename(columns=KIS_RENAME["account_balance"])
 
     df["total_purchase_amount"] = df["total_purchase_amount"].astype(float)
     df["total_evaluation_amount"] = df["total_evaluation_amount"].astype(float)
     df["total_profit_amount"] = df["total_profit_amount"].astype(float)
+
+    if not (df["total_evaluation_amount"] > 0).all():
+        return pd.DataFrame(columns=BALANCE_COLUMNS)
+
+    if not fund_price:
+        raise ValueError(f"fund_price가 없다 — {account_code} 평가 불가 (NAV 결측)")
 
     df = df.assign(
         standard_date=standard_date,
@@ -169,6 +184,10 @@ def transform_pension_fund_balance(
     )
 
     df["holding_quantity"] = (df["total_evaluation_amount"] / fund_price / 0.001).round(0)
+    # 평가금액이 NAV×0.001의 절반 미만이면 반올림으로 좌수가 0이 된다(잔량 소수점 등)
+    if not (df["holding_quantity"] > 0).all():
+        return pd.DataFrame(columns=BALANCE_COLUMNS)
+
     df["unit_purchase_price"] = (df["total_purchase_amount"] / df["holding_quantity"] / 0.001).round(0)
 
     if (df["total_purchase_amount"] > 0).all():

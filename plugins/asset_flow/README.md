@@ -161,7 +161,8 @@ KIS·Upbit API 토큰을 날짜 기반 파일(`data/tokens/YYYYMMDD_token.json`)
 |---|---|---|
 | `KIS_STOCK` | KIS OAuth2 (Bearer) | `KIS_STOCK` |
 | `KIS_ISA` | KIS OAuth2 (Bearer) | `KIS_ISA` |
-| `KIS_PENSION` | KIS OAuth2 (Bearer) | `KIS_PENSION` |
+| `KIS_PENSION_DEDUCTIBLE` | KIS OAuth2 (Bearer) | `KIS_PENSION_DEDUCTIBLE` |
+| `KIS_PENSION_NON_DEDUCTIBLE` | KIS OAuth2 (Bearer) | `KIS_PENSION_NON_DEDUCTIBLE` |
 | `KIS_IRP` | KIS OAuth2 (Bearer) | `KIS_IRP` |
 | `UPBIT` | JWT (access_key + secret) | `UPBIT` |
 
@@ -191,7 +192,7 @@ KIS·Upbit API 토큰을 날짜 기반 파일(`data/tokens/YYYYMMDD_token.json`)
 |---|---|---|
 | `transform_domestic_balance(raw, standard_date, config)` | `get_domestic_balance()` 응답 | 국내주식(ISA·연금저축 주식 포함) 잔고 변환. `asset_type="STOCK"` |
 | `transform_overseas_balance(raw, standard_date, config)` | `get_overseas_balance()` 응답 | 해외주식 잔고 변환. `asset_type="STOCK"` |
-| `transform_pension_fund_balance(raw, standard_date, config, product_code, fund_price, product_name)` | `get_account_balance()` 응답 | 연금저축 펀드 변환. API 응답 `output1[1]`(펀드/MMW 행) 고정 인덱스 접근. `asset_type="FUND"`, `multiplier=0.001` |
+| `transform_pension_fund_balance(raw, standard_date, config, product_code, fund_price, product_name)` | `get_account_balance()` 응답 | 연금저축 펀드 변환. API 응답 `output1[1]`(펀드/MMW 행) 고정 인덱스 접근. `asset_type="FUND"`, `multiplier=0.001`. 행이 없거나 평가금액·역산 좌수가 0이면 빈 DF 반환(펀드 미보유). NAV 검증은 보유 판정 뒤 |
 | `transform_cma_cash_balance(raw, standard_date, config)` | `get_account_balance()` 응답 | CMA 현금 잔고 변환. API 응답 `output1[14]`(외화단기사채 행) 고정 인덱스 접근. `asset_type="CASH"` |
 | `transform_exchange_rate(raw_list, standard_date)` | `get_exchange_rate()` 응답 리스트 | 환율 변환. 달러/파운드·달러/유로는 원/달러 기준으로 교차 환산하여 원화 기준으로 통일 |
 
