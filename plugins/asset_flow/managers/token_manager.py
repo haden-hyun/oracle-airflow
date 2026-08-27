@@ -23,6 +23,12 @@ from asset_flow.config.kis import KIS
 
 class TokenManager:
     """KIS(한국투자증권) 및 Upbit 액세스 토큰의 발급·파일 저장·조회를 담당하는 매니저"""
+
+    REQUIRED_TOKEN_KEYS = {
+        "KIS_STOCK", "KIS_ISA", "KIS_PENSION_DEDUCTIBLE",
+        "KIS_PENSION_NON_DEDUCTIBLE", "KIS_IRP", "UPBIT",
+    }
+
     def __init__(self):
         # 1. 한국 시간(KST) 기준 날짜 설정 (새벽 실행 시 UTC 문제 방지)
         kst = timezone("Asia/Seoul")
@@ -138,6 +144,9 @@ class TokenManager:
         당일 토큰 딕셔너리 반환
 
         파일이 없으면 TokenGenerator()를 호출하여 먼저 발급한 뒤 반환한다.
+        파일은 있으나 필요한 키(REQUIRED_TOKEN_KEYS)가 빠져 있으면 — 코드 배포로
+        Variable/토큰 키가 바뀌었는데 당일 파일이 이미 옛 스키마로 캐시된 경우 —
+        파일을 지우고 재발급한다. 그렇지 않으면 자정까지 KeyError로 실패한다.
 
         Returns:
             dict: {KIS_STOCK, KIS_ISA, KIS_PENSION_DEDUCTIBLE,
@@ -148,5 +157,11 @@ class TokenManager:
 
         with open(self.TOKEN_FILE_PATH, "r", encoding="utf-8") as f:
             tokens = json.load(f)
+
+        if not self.REQUIRED_TOKEN_KEYS.issubset(tokens):
+            os.remove(self.TOKEN_FILE_PATH)
+            self.TokenGenerator()
+            with open(self.TOKEN_FILE_PATH, "r", encoding="utf-8") as f:
+                tokens = json.load(f)
 
         return tokens

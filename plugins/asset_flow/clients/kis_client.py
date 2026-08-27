@@ -84,8 +84,15 @@ class KISApiClient(BaseApiClient):
         행 인덱스 의미는 KIS.ACCOUNT_BALANCE_ROW_NAMES 참조.
         BSPR_BF_DT_APLY_YN="Y" 적용으로 전일 기준가 기반 평가금액 반환.
 
+        HTTP 200이어도 KIS 응답 자체가 실패(rt_cd != "0")면 output1이 비어 있거나
+        없다 — "미보유"와 구분되지 않으면 호출부가 이를 미보유로 오인해 기존
+        적재분을 지울 수 있으므로 여기서 예외로 막는다.
+
         Returns:
             dict: 원시 JSON 응답 — output1[1]=펀드/MMW, output1[14]=외화단기사채(CMA)
+
+        Raises:
+            ValueError: KIS 응답이 rt_cd="0"(성공)이 아닐 때
         """
         url = self._build_url(KIS.PATHS["account_balance"])
         headers = self._build_headers(KIS.TR_IDS["account_balance"])
@@ -97,7 +104,13 @@ class KISApiClient(BaseApiClient):
         params.update(KIS.PARAMS["account_balance"])
 
         response = self.safe_request("GET", url, headers=headers, params=params)
-        return response.json()
+        data = response.json()
+        if data.get("rt_cd") != "0":
+            raise ValueError(
+                f"KIS 투자계좌자산현황 조회 실패 (rt_cd={data.get('rt_cd')}): "
+                f"{data.get('msg1')}"
+            )
+        return data
 
     def get_exchange_rate(
         self, standard_date: str, product_codes: List[str]

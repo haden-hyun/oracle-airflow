@@ -87,11 +87,20 @@ def _sanity_check(
     존재하지 않는다. 대신 좌수에 반비례하는 역산값을 최신 NAV와 대조한다.
     자릿수 오타는 역산값을 10배로 튀게 하므로 NAV가 하루 이틀 낡아도 판정이 뒤집히지 않는다.
     evaluation_amount가 없으면 매입원금으로 대체 검증한다(누적 평균이라 허용치가 넓다).
+
+    standard_date가 과거(오늘 이전)면 최신 NAV와의 괴리가 그 기간의 정상적인 시세
+    변동일 수 있어 이 허용오차가 의미를 갖지 못한다 — 경고만 남기고 검증은 생략한다.
     """
     if standard_date >= datetime.now(kst).strftime('%Y-%m-%d'):
         print(f"[정상] {standard_date} 기준가는 D+1 06:55 크롤링 예정 — 자릿수 검증으로 대체")
     else:
-        print(f"[경고] {standard_date} NAV 결측 — 크롤링 실패 의심. fetch_fund_price_daily 로그 확인")
+        # 과거 날짜는 최신 NAV와의 괴리가 그 기간 시세 변동 때문일 수 있어
+        # 10%/50% 허용오차가 의미를 갖지 못한다 — 자릿수 검증을 건너뛰고 경고만 남긴다.
+        print(
+            f"[경고] {standard_date} NAV 결측 — 크롤링 실패 의심. fetch_fund_price_daily 로그 확인. "
+            "과거 날짜라 최신 NAV 기준 자릿수 검증은 건너뛴다"
+        )
+        return
 
     with engine.connect() as conn:
         latest = conn.execute(
@@ -233,6 +242,8 @@ def upsert_manual_position_dag():
                 )
             elif evaluation_amount is None:
                 print("[검증 스킵] evaluation_amount 미입력")
+            elif evaluation_amount == 0:
+                raise AirflowException("evaluation_amount는 0이 될 수 없다 — 미입력이면 비워둘 것")
             else:
                 expected = holding_quantity * nav * account_config['multiplier']
                 diff_rate = abs(expected - evaluation_amount) / evaluation_amount

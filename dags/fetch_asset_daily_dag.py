@@ -3,7 +3,7 @@
 
 keywords: asset, portfolio, KIS, Upbit, stock, fund, CMA, crypto, PostgreSQL, daily snapshot
 
-매일 07:00 KST에 실행되어 11개 자산 유형의 전일(T-1) 기준 잔고를 수집하고
+매일 07:00 KST에 실행되어 10개 자산 유형의 전일(T-1) 기준 잔고를 수집하고
 account.asset_daily 테이블에 계좌 단위로 적재한다.
 
 수집 자산:
@@ -64,7 +64,7 @@ default_args = {
 
 DAG_DOC = """
 ### 목적
-전 계좌(API 6종 + 원장 기반 4종, 총 11개 자산)의 그날 잔고·평가금액을 계산해
+전 계좌(API 6종 + 원장 기반 4종, 총 10개 자산)의 그날 잔고·평가금액을 계산해
 `account.asset_daily`에 적재하는 메인 파이프라인이다.
 
 ### Pipeline
