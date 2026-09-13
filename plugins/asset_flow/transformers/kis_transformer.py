@@ -154,6 +154,7 @@ def transform_pension_fund_balance(
     account_name = config["type"]
 
     rows = raw.get("output1") or []
+    print(f"[{account_code}] 계좌잔고 원시응답 output1 ({len(rows)}행): {rows}")
     # index 1 = "펀드/MMW" 행 (KIS API 응답 순서 고정)
     if len(rows) < 2:
         return pd.DataFrame(columns=BALANCE_COLUMNS)
