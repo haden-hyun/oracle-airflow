@@ -1,101 +1,104 @@
 """
-업비트(Upbit) API 전용 클라이언트
+업비트(Upbit) API 클라이언트
 
-BaseApiClient를 상속하여 Upbit API JWT 인증 헤더 생성과 각 엔드포인트별 요청 메서드를 제공한다.
-응답은 원시 JSON을 그대로 반환하며, 데이터 변환은 upbit_transformer에서 담당한다.
-
-제공 메서드:
-    - get_balance(): 보유 자산 조회 (/v1/accounts)
-    - get_market_codes(): 마켓 코드 및 한글명 목록 (/v1/market/all)
-    - get_daily_candles(): 일 캔들 종가 조회 (/v1/candles/days) — T-1 종가 수집용
+- 인증 엔드포인트는 요청마다 JWT 서명 (nonce=uuid4, 토큰 저장·재사용 없음)
+- 공개 엔드포인트(market/all, candles)는 인증 헤더 없음
+- 제공: get_balance / get_market_codes / get_daily_candles / get_api_keys
 """
 
-from typing import Dict, List
+from __future__ import annotations
+
+import uuid
+
+import jwt
+
 from asset_flow.clients.base_client import BaseApiClient
 from asset_flow.config.upbit import UPBIT
 
 
 class UpbitApiClient(BaseApiClient):
-    """업비트 API 클라이언트"""
+    """업비트 API 클라이언트."""
 
-    def __init__(self, token: str):
-        super().__init__(base_url=UPBIT.BASE_URL, token=token)
-
-    def _build_headers(self) -> Dict[str, str]:
-        """Upbit API JWT Bearer 인증 헤더 생성"""
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
-
-    def get_balance(self) -> Dict:
+    def __init__(self, access_key: str, secret_key: str):
         """
-        보유 자산 조회
-
-        Returns:
-            dict: 원시 JSON 응답 (리스트 형태)
+        Purpose: 키 보관 (서명은 요청 시점에)
+        Parameter:
+            - access_key: Upbit access key
+            - secret_key: Upbit secret key
+        Input: 없음
+        Output: 없음
         """
-        url = self._build_url(UPBIT.PATHS["balance"])
-        headers = self._build_headers()
+        super().__init__(base_url=UPBIT.BASE_URL)
+        self._access_key = access_key
+        self._secret_key = secret_key
 
-        response = self.safe_request("GET", url, headers=headers)
-        return response.json()
-
-    def get_market_codes(self) -> Dict:
+    def _build_headers(self, auth: bool = True) -> dict[str, str]:
         """
-        마켓 코드 및 한글명 목록 조회 (/v1/market/all)
-
-        Returns:
-            list: [{market, korean_name, english_name}, ...] 전체 마켓 목록
+        Purpose: 요청 헤더 생성 — 인증 요청이면 새 nonce 로 JWT 서명
+        Parameter:
+            - auth: 인증 헤더 포함 여부 (기본 True)
+        Input: 없음
+        Output: 헤더 dict
         """
-        url = self._build_url(UPBIT.PATHS["market_code"])
-        headers = self._build_headers()
+        headers = {"Content-Type": "application/json"}
+        if auth:
+            token = jwt.encode({"access_key": self._access_key, "nonce": str(uuid.uuid4())}, self._secret_key)
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
 
-        response = self.safe_request("GET", url, headers=headers)
-        return response.json()
-
-    # def get_current_prices(self, markets: List[str]) -> Dict:
-    #     """
-    #     현재가 조회 (실시간 ticker)
-    #     → standard_date(T-1)와 기준일 불일치로 인해 get_daily_candles()로 대체
-    #
-    #     Args:
-    #         markets: 마켓 코드 리스트 ['KRW-BTC', 'KRW-ETH', ...]
-    #
-    #     Returns:
-    #         dict: 원시 JSON 응답
-    #     """
-    #     url = self._build_url(UPBIT.PATHS["current_price"])
-    #     headers = self._build_headers()
-    #     params = {"markets": markets}
-    #     response = self.safe_request("GET", url, headers=headers, params=params)
-    #     return response.json()
-
-    def get_daily_candles(self, markets: List[str], to_date: str) -> List[Dict]:
+    def _get(self, path_key: str, auth: bool, params: dict | None = None):
         """
-        일 캔들 종가 조회 (T-1 종가 고정 수집용)
-
-        Args:
-            markets: 마켓 코드 리스트 ['KRW-BTC', 'KRW-ETH', ...]
-            to_date: 조회 상한 일자 ('YYYY-MM-DD') — 이 날짜 00:00:00 이전 캔들 1개 반환
-                     DAG에서 base_date(T일)를 전달하면 T-1 종가가 반환됨
-
-        Returns:
-            list: 마켓별 일 캔들 응답 리스트 [{market, trade_price, candle_date_time_kst, ...}]
+        Purpose: GET 요청 공통 처리
+        Parameter:
+            - path_key: UPBIT.PATHS 키
+            - auth: 인증 필요 여부
+            - params: 쿼리 파라미터 (기본 None)
+        Input: Upbit API
+        Output: 응답 JSON
         """
-        url = self._build_url(UPBIT.PATHS["daily_candle"])
-        headers = self._build_headers()
+        url = self._build_url(UPBIT.PATHS[path_key])
+        return self.safe_request("GET", url, headers=self._build_headers(auth), params=params).json()
+
+    def get_balance(self) -> list:
+        """
+        Purpose: 보유 자산 조회 (/v1/accounts)
+        Parameter: 없음
+        Input: Upbit API (인증)
+        Output: 잔고 리스트
+        """
+        return self._get("balance", auth=True)
+
+    def get_api_keys(self) -> list:
+        """
+        Purpose: API 키 목록·만료 시각 조회 (/v1/api_keys)
+        Parameter: 없음
+        Input: Upbit API (인증)
+        Output: [{access_key, expire_at}, ...]
+        """
+        return self._get("api_keys", auth=True)
+
+    def get_market_codes(self) -> list:
+        """
+        Purpose: 마켓 코드·한글명 목록 (/v1/market/all)
+        Parameter: 없음
+        Input: Upbit API (공개)
+        Output: [{market, korean_name, english_name}, ...]
+        """
+        return self._get("market_code", auth=False)
+
+    def get_daily_candles(self, markets: list[str], to_date: str) -> list:
+        """
+        Purpose: 마켓별 T-1 일 캔들 1개 조회
+        Parameter:
+            - markets: 마켓 코드 리스트 (KRW-BTC 등)
+            - to_date: 상한일 (YYYY-MM-DD) — base_date(T) 를 넘기면 T-1 종가
+        Input: Upbit API (공개)
+        Output: 마켓별 캔들 리스트
+        """
         result = []
-
         for market in markets:
-            params = {
-                "market": market,
-                "to": f"{to_date}T00:00:00",
-                "count": 1,
-            }
-            response = self.safe_request("GET", url, headers=headers, params=params)
-            candles = response.json()
+            params = {"market": market, "to": f"{to_date}T00:00:00", "count": 1}
+            candles = self._get("daily_candle", auth=False, params=params)
             if candles:
                 result.append(candles[0])
-
         return result

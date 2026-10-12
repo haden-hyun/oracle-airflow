@@ -1,24 +1,17 @@
 """
-업비트(Upbit) API 설정 모음
+업비트(Upbit) API 상수
 
-API 기본 URL과 엔드포인트 경로(PATHS)를 중앙 관리한다.
-
-참고:
-    - 업비트 API 문서: https://docs.upbit.com
-    - 인증 방식: JWT Bearer token (요청별 생성)
+- BASE_URL, PATHS (인증: 요청마다 JWT 서명 — clients/upbit_client.py)
 """
-
-from typing import Dict
-
 
 class UPBIT:
     """업비트 API 설정"""
 
     BASE_URL: str = "https://api.upbit.com"
 
-    PATHS: Dict[str, str] = {
+    PATHS: dict[str, str] = {
         "balance": "/v1/accounts",
+        "api_keys": "/v1/api_keys",
         "market_code": "/v1/market/all",
-        "current_price": "/v1/ticker",
         "daily_candle": "/v1/candles/days",
     }

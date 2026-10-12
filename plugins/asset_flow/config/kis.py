@@ -1,23 +1,16 @@
 """
-한국투자증권(KIS) OpenAPI 설정 모음
+한국투자증권(KIS) OpenAPI 상수
 
-API 엔드포인트 경로(PATHS), TR_ID, 고정 쿼리 파라미터(PARAMS),
-환율 조회용 상품코드, 계좌잔고 응답의 행 순서(ACCOUNT_BALANCE_ROW_NAMES)를 중앙 관리한다.
-
-참고:
-    - KIS OpenAPI 포털: https://apiportal.koreainvestment.com
-    - 인증 방식: OAuth2 (Bearer token, 1일 유효)
+- PATHS·TR_IDS·PARAMS: 엔드포인트·거래 ID·고정 쿼리
+- EXCHANGE_RATE_PRODUCT_CODES, ACCOUNT_BALANCE_ROW_NAMES(CTRP6548R 행 순서)
 """
-
-from typing import Dict, List
-
 
 class KIS:
     """한국투자증권 API 설정"""
 
     BASE_URL: str = "https://openapi.koreainvestment.com:9443"
 
-    PATHS: Dict[str, str] = {
+    PATHS: dict[str, str] = {
         # API명: OAuth 2.0 토큰 발급
         "token": "/oauth2/tokenP",
         # API명: 투자계좌자산현황조회[v1_국내주식-048] → 금현물 및 RP/발행어음 조회용
@@ -30,14 +23,14 @@ class KIS:
         "overseas_balance": "/uapi/overseas-stock/v1/trading/inquire-balance",
     }
 
-    TR_IDS: Dict[str, str] = {
+    TR_IDS: dict[str, str] = {
         "exchange_rate": "FHKST03030100",
         "domestic_balance": "TTTC8434R",
         "overseas_balance": "TTTS3012R",
         "account_balance": "CTRP6548R",
     }
 
-    PARAMS: Dict[str, dict] = {
+    PARAMS: dict[str, dict] = {
         "account_balance": {
             "INQR_DVSN_1": "",
             "BSPR_BF_DT_APLY_YN": "Y",  # 전일 기준가 적용 (스냅샷 기준일 일치)
@@ -65,10 +58,10 @@ class KIS:
         },
     }
 
-    EXCHANGE_RATE_PRODUCT_CODES: List[str] = ["FX@KRWKFTC", "FX@KRWJS", "FX@GBP", "FX@EUR"]
+    EXCHANGE_RATE_PRODUCT_CODES: list[str] = ["FX@KRWKFTC", "FX@KRWJS", "FX@GBP", "FX@EUR"]
 
     # 투자계좌자산현황 응답의 행 순서 (API가 인덱스 없이 순서로 반환)
-    ACCOUNT_BALANCE_ROW_NAMES: List[str] = [
+    ACCOUNT_BALANCE_ROW_NAMES: list[str] = [
         "주식",
         "펀드/MMW",
         "IMA",

@@ -24,3 +24,9 @@ data/
 secrets/*
 !secrets/*.example.yaml
 !secrets/README.md
+
+# 백업·캐시
+*.dump
+*.tgz
+.ruff_cache/
+.pytest_cache/

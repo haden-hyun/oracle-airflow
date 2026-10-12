@@ -1,6 +1,11 @@
-psycopg2-binary
-requests
-pandas
-pyupbit
-numpy
-playwright
+# Airflow 3.3.2 (green). Versions follow the official constraints (Dockerfile CONSTRAINTS_URL) where listed;
+# packages not in constraints are pinned to the versions verified on blue.
+psycopg2-binary==2.9.13
+requests==2.34.2
+pandas==3.0.5
+numpy==2.5.3
+PyJWT==2.14.0
+pytz==2026.3.post1
+python-dateutil==2.9.0.post0
+playwright==1.60.0
+holidays==0.106

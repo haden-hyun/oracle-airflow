@@ -1,22 +1,15 @@
 """
-출력 스키마 및 API 필드명 매핑 정의
+출력 스키마와 API 필드명 매핑
 
-각 API 응답의 원시 필드명을 도메인 필드명으로 변환하는 RENAME 딕셔너리와,
-DB 적재 테이블 컬럼 순서를 결정하는 TypedDict / 컬럼 리스트를 관리한다.
-
-구성:
-    - KIS_RENAME: KIS API 응답 필드 → 도메인 필드 매핑 (account_balance, exchange_rate, domestic_balance, overseas_balance)
-    - UPBIT_RENAME: Upbit API 응답 필드 → 도메인 필드 매핑
-    - BalanceRecord: 자산 잔고 통합 스키마 (account.asset_daily 테이블 기준)
-    - ExchangeRateRecord: 환율 스키마 (market.exchange_rate_daily 테이블 기준)
-    - BALANCE_COLUMNS / EXCHANGE_RATE_COLUMNS: pandas DataFrame 컬럼 선택용 리스트
+- KIS_RENAME / UPBIT_RENAME: API 응답 필드 → 도메인 필드
+- BalanceRecord / ExchangeRateRecord: asset_daily / exchange_rate_daily 스키마
+- BALANCE_COLUMNS / EXCHANGE_RATE_COLUMNS: DataFrame 컬럼 순서
 """
 
-from typing import Dict, List, TypedDict
+from typing import TypedDict
 
-# ── API 필드명 → 도메인 필드명 변환 매핑 ─────────────────────────────────────
-
-KIS_RENAME: Dict[str, Dict[str, str]] = {
+# ── API 필드명 → 도메인 필드명 변환 매핑 ──
+KIS_RENAME: dict[str, dict[str, str]] = {
     "account_balance": {
         "pchs_amt": "total_purchase_amount",  # 매입금액
         "evlu_amt": "total_evaluation_amount",  # 평가금액
@@ -62,7 +55,7 @@ KIS_RENAME: Dict[str, Dict[str, str]] = {
     },
 }
 
-UPBIT_RENAME: Dict[str, str] = {
+UPBIT_RENAME: dict[str, str] = {
     "currency": "product_code",  # 종목코드
     "korean_name": "product_name",  # 종목명
     "balance": "holding_quantity",  # 보유수량
@@ -71,9 +64,7 @@ UPBIT_RENAME: Dict[str, str] = {
 }
 
 
-# ── 출력 스키마 정의 (TypedDict) ───────────────────────────────────────────────
-
-
+# ── 출력 스키마 정의 (TypedDict) ──
 class BalanceRecord(TypedDict):
     standard_date: str
     account_code: str
@@ -105,7 +96,6 @@ class ExchangeRateRecord(TypedDict):
     lowest_price: float
 
 
-# ── pandas 컬럼 선택용 리스트 (TypedDict에서 파생) ─────────────────────────────
-
-BALANCE_COLUMNS: List[str] = list(BalanceRecord.__annotations__.keys())
-EXCHANGE_RATE_COLUMNS: List[str] = list(ExchangeRateRecord.__annotations__.keys())
+# ── pandas 컬럼 선택용 리스트 (TypedDict에서 파생) ──
+BALANCE_COLUMNS: list[str] = list(BalanceRecord.__annotations__.keys())
+EXCHANGE_RATE_COLUMNS: list[str] = list(ExchangeRateRecord.__annotations__.keys())

@@ -1,59 +1,44 @@
 """
-수동 자산(IRP·DC·적금·주택청약) 원장 → asset_daily 변환
+수기 자산(IRP·DC·적금·청약) 원장 행 → asset_daily 변환 (순수 함수)
 
-account.manual_position_ledger의 계좌별 한 행을 그날의 자산 평가로 변환한다.
-API 호출이 없는 순수 함수이며, kis_transformer / upbit_transformer와 대칭이다.
-
-제공 함수:
-    - transform_fund_position(): IRP·DC 좌수 × NAV 평가
-    - transform_cash_position(): 적금·청약 원금 캐리
+- transform_fund_position(): 좌수 × NAV × multiplier (multiplier 는 config manual_asset_types)
+- transform_cash_position(): 원금 캐리
 """
+
+from __future__ import annotations
 
 import pandas as pd
 
 from asset_flow.config.schemas import BALANCE_COLUMNS
 from asset_flow.transformers.base_transformer import normalize_numeric
 
-# 원장은 적금·청약의 product_code를 NULL로 둔다. asset_daily.product_code는
-# NOT NULL이자 PK 일부라 상수로 채운다 (CMA의 product_code="CMA"와 같은 패턴).
+# 원장은 적금·청약 product_code 를 NULL 로 둠 → asset_daily PK 용 상수 (CMA="CMA" 패턴)
 _CASH_PRODUCT_CODE = {
     "INSTALLMENT_SAVINGS": "INSTALLMENT_SAVINGS",
     "HOUSING_SUBSCRIPTION": "HOUSING_SUBSCRIPTION",
 }
 
-_FUND_MULTIPLIER = 0.001
-
 
 def transform_fund_position(
-    row: dict, standard_date: str, fund_price: float, product_name: str | None = None
+    row: dict, standard_date: str, fund_price: float | None, product_name: str | None, multiplier: float
 ) -> pd.DataFrame:
     """
-    IRP·DC 원장 행 → asset_daily 변환 (좌수 × NAV × 0.001)
-
-    좌수는 원장의 확정값이라 fund_price가 없으면 ValueError — 직전 값으로 채우지 않는다.
-
-    Args:
-        row: get_manual_positions() 결과의 한 계좌 행
-        standard_date: 평가 기준일(D). 원장 행 자체의 효력일(row["standard_date"])과는 다르다
-        fund_price: standard_date 기준 NAV(market.fund_price_daily)
-        product_name: 펀드명. 없으면 product_code로 채운다
-
-    Returns:
-        BALANCE_COLUMNS 스키마의 단일 행 DataFrame
+    Purpose: IRP·DC 원장 행 평가 (좌수 × NAV × multiplier)
+    Parameter:
+        - row: get_manual_positions() 의 한 계좌 행
+        - standard_date: 평가 기준일 (원장 효력일과 다름)
+        - fund_price: 기준일 NAV (없으면 None)
+        - product_name: 펀드명 (없으면 product_code 로 대체)
+        - multiplier: 좌수 단위 배수 (예: 0.001)
+    Input: 없음
+    Output: BALANCE_COLUMNS 1행 DataFrame (NAV 없으면 ValueError — 직전 값으로 채우지 않음)
     """
     if fund_price is None:
-        raise ValueError(f"fund_price가 없다 — {row['account_code']} 평가 불가 (NAV 결측)")
-
-    holding_quantity = float(row["holding_quantity"])
-    total_purchase_amount = float(row["total_purchase_amount"])
-
-    total_evaluation_amount = holding_quantity * fund_price * _FUND_MULTIPLIER
-    unit_purchase_price = total_purchase_amount / holding_quantity / _FUND_MULTIPLIER
-    total_profit_amount = total_evaluation_amount - total_purchase_amount
-    valuation_profit_rate = (
-        total_profit_amount / total_purchase_amount * 100 if total_purchase_amount else 0.0
-    )
-
+        raise ValueError(f"fund_price가 없다 — {standard_date} 평가 불가 (NAV 결측)")
+    qty = float(row["holding_quantity"])
+    purchase = float(row["total_purchase_amount"])
+    evaluation = qty * fund_price * multiplier
+    profit = evaluation - purchase
     df = pd.DataFrame([{
         "standard_date": standard_date,
         "account_code": row["account_code"],
@@ -63,50 +48,43 @@ def transform_fund_position(
         "asset_type": "FUND",
         "currency_code": "KRW",
         "exchange_code": "KRX",
-        "multiplier": _FUND_MULTIPLIER,
-        "holding_quantity": holding_quantity,
-        "unit_purchase_price": unit_purchase_price,
+        "multiplier": multiplier,
+        "holding_quantity": qty,
+        "unit_purchase_price": purchase / qty / multiplier,
         "unit_market_price": fund_price,
-        "total_purchase_amount": total_purchase_amount,
-        "total_evaluation_amount": total_evaluation_amount,
-        "total_profit_amount": total_profit_amount,
-        "valuation_profit_rate": valuation_profit_rate,
+        "total_purchase_amount": purchase,
+        "total_evaluation_amount": evaluation,
+        "total_profit_amount": profit,
+        "valuation_profit_rate": profit / purchase * 100 if purchase else 0.0,
     }])
     return normalize_numeric(df)[BALANCE_COLUMNS]
 
 
 def transform_cash_position(row: dict, standard_date: str) -> pd.DataFrame:
     """
-    적금·청약 원장 행 → asset_daily 변환 (원금 캐리)
-
-    transform_cma_cash_balance와 같은 패턴 — 수량 개념이 없어 holding_quantity=1,
-    unit_*_price=원금으로 고정한다. 이자는 만기 계산이라 손익은 항상 0.
-
-    Args:
-        row: get_manual_positions() 결과의 한 계좌 행
-        standard_date: 평가 기준일(D)
-
-    Returns:
-        BALANCE_COLUMNS 스키마의 단일 행 DataFrame
+    Purpose: 적금·청약 원장 행 평가 (원금 캐리, 손익 0)
+    Parameter:
+        - row: get_manual_positions() 의 한 계좌 행
+        - standard_date: 평가 기준일
+    Input: 없음
+    Output: BALANCE_COLUMNS 1행 DataFrame
     """
-    total_purchase_amount = float(row["total_purchase_amount"])
-    product_code = _CASH_PRODUCT_CODE[row["account_type"]]
-
+    amount = float(row["total_purchase_amount"])
     df = pd.DataFrame([{
         "standard_date": standard_date,
         "account_code": row["account_code"],
         "account_name": row["account_name"],
-        "product_code": product_code,
+        "product_code": _CASH_PRODUCT_CODE[row["account_type"]],
         "product_name": row["account_name"],
         "asset_type": "CASH",
         "currency_code": "KRW",
         "exchange_code": None,
         "multiplier": 1.0,
         "holding_quantity": 1.0,
-        "unit_purchase_price": total_purchase_amount,
-        "unit_market_price": total_purchase_amount,
-        "total_purchase_amount": total_purchase_amount,
-        "total_evaluation_amount": total_purchase_amount,
+        "unit_purchase_price": amount,
+        "unit_market_price": amount,
+        "total_purchase_amount": amount,
+        "total_evaluation_amount": amount,
         "total_profit_amount": 0.0,
         "valuation_profit_rate": 0.0,
     }])

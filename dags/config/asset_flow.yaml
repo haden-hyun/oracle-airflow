@@ -1,0 +1,25 @@
+# 비밀 아닌 설정 (커밋 대상). 계좌 단위 값·키는 secrets/asset_flow.secrets.yaml
+
+tables:
+  asset_daily:         {schema: account, table_name: asset_daily}
+  exchange_rate_daily: {schema: market,  table_name: exchange_rate_daily}
+  fund_price_daily:    {schema: market,  table_name: fund_price_daily}
+
+funds:
+  pension_fund_code: K553W5E17401            # kind=kis_pension_fund 기본값 (계좌별 fund_code 로 override)
+  crawl_codes: [K553W5E17401, K55105D43299]  # 항상 크롤링 (계좌·유형 펀드는 런타임에 합집합)
+
+manual_asset_types:                          # 키 = account_master.account_type
+  IRP:                  {product_code: K55105D43299, multiplier: 0.001}
+  DC:                   {product_code: K55105D43299, multiplier: 0.001}
+  # 현금성: product_code 없음
+  INSTALLMENT_SAVINGS:  {product_code: null, multiplier: 1.0}
+  HOUSING_SUBSCRIPTION: {product_code: null, multiplier: 1.0}
+
+credential_check:                            # API 키 만료 알림 규칙
+  stage_days: [14, 7]                        # 단계 알림
+  daily_from: 3                              # D-3 부터 매일 (만료 후 포함)
+  window: 14                                 # 구간 내 월요일 따라잡기
+
+dashboard:                                   # 대시보드 저장소 소유 객체 (Airflow 는 이름만 앎)
+  refresh_procedure: dashboard.refresh_views # 적재 DAG 마지막 태스크가 CALL — MV 갱신 + 갱신 기록

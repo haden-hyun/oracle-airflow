@@ -1,286 +1,194 @@
 """
-KIS API 원시 응답 → 도메인 DataFrame 변환
+KIS API 원시 응답 → 도메인 DataFrame 변환 (순수 함수)
 
-KIS API 각 TR_ID의 응답 JSON을 받아 account.asset_daily / market.exchange_rate_daily
-테이블 스키마에 맞는 pandas DataFrame으로 변환한다.
-숫자 정규화는 base_transformer.normalize_numeric에 위임한다.
-
-제공 함수:
-    - transform_domestic_balance(): 국내주식 잔고 변환 (TTTC8434R output1)
-    - transform_overseas_balance(): 해외주식 잔고 변환 (TTTS3012R output1)
-    - transform_pension_fund_balance(): 연금저축 펀드 잔고 변환 및 좌수·매입단가 역산 (CTRP6548R output1[1], 미보유 시 빈 DF)
-    - transform_cma_cash_balance(): CMA 현금 잔고 변환 (CTRP6548R output1[14])
-    - transform_exchange_rate(): 환율 변환 및 교차 환산 (FHKST03030100)
+- transform_domestic_balance / transform_overseas_balance: 주식 잔고
+- transform_pension_fund_balance: 연금저축 펀드 (평가금액 → 좌수 역산, 미보유 시 빈 DF)
+- transform_cma_cash_balance: CMA 현금 (CTRP6548R output1[14])
+- transform_rp_note_balance: 위탁 RP/발행어음 (CTRP6548R "RP/발행어음" 행, 행 수·합계 검증)
+- transform_exchange_rate: 환율 + GBP·EUR 원화 교차 환산
 """
 
-import pandas as pd
-from typing import List
+from __future__ import annotations
 
-from asset_flow.config.schemas import KIS_RENAME, BALANCE_COLUMNS, EXCHANGE_RATE_COLUMNS
+import pandas as pd
+
+from asset_flow.config.kis import KIS
+from asset_flow.config.schemas import BALANCE_COLUMNS, EXCHANGE_RATE_COLUMNS, KIS_RENAME
 from asset_flow.transformers.base_transformer import normalize_numeric
 
-_CURRENCY_CODE_MAP = {
-    "원/달러": "USD",
-    "원/엔": "JPY",
-    "원/파운드": "GBP",
-    "원/유로": "EUR",
-}
-
-_PRICE_COLS: List[str] = [
-    "base_rate",
-    "previous_day_closing_price",
-    "opening_price",
-    "highest_price",
-    "lowest_price",
-]
+_CURRENCY_CODE_MAP = {"원/달러": "USD", "원/엔": "JPY", "원/파운드": "GBP", "원/유로": "EUR"}
+EXCHANGE_CURRENCIES = sorted(_CURRENCY_CODE_MAP.values())     # 환율 DAG 가 적재하는 통화
+_PRICE_COLS = ["base_rate", "previous_day_closing_price", "opening_price", "highest_price", "lowest_price"]
+_AMOUNT_COLS = ["total_purchase_amount", "total_evaluation_amount", "total_profit_amount"]
 
 
-def transform_domestic_balance(
-    raw: dict,
-    standard_date: str,
-    config: dict,
-) -> pd.DataFrame:
+def _account(config: dict) -> dict:
     """
-    국내주식 잔고 원시 응답 → BALANCE_COLUMNS DataFrame
-
-    Args:
-        raw: KIS get_domestic_balance() 원시 JSON (output1 키 포함)
-        standard_date: 기준일자 (YYYY-MM-DD)
-        config: Airflow Variable 계좌 설정 딕셔너리
-
-    Returns:
-        BALANCE_COLUMNS 스키마의 DataFrame (보유 종목이 없으면 빈 DataFrame)
+    Purpose: 계좌 식별 컬럼 생성
+    Parameter:
+        - config: {account, product_code, type}
+    Input: 없음
+    Output: {"account_code", "account_name"}
     """
-    account_code = f"{config['account']}-{config['product_code']}"
-    account_name = config["type"]
+    return {"account_code": f"{config['account']}-{config['product_code']}", "account_name": config["type"]}
+
+
+def transform_domestic_balance(raw: dict, standard_date: str, config: dict) -> pd.DataFrame:
+    """
+    Purpose: 국내주식 잔고 변환 (TTTC8434R output1)
+    Parameter:
+        - raw: get_domestic_balance() 원시 JSON
+        - standard_date: 기준일
+        - config: 계좌 설정 dict
+    Input: 없음
+    Output: BALANCE_COLUMNS DataFrame (보유 종목 없으면 빈 DataFrame)
+    """
     df = pd.json_normalize(raw["output1"])
     if df.empty:
         return pd.DataFrame()
     return normalize_numeric(
         df.rename(columns=KIS_RENAME["domestic_balance"])
-        .assign(
-            standard_date=standard_date,
-            account_code=account_code,
-            account_name=account_name,
-            asset_type="STOCK",
-            currency_code="KRW",
-            exchange_code="KRX",
-            multiplier=1.0,
-        )
-        [BALANCE_COLUMNS]
+        .assign(standard_date=standard_date, **_account(config), asset_type="STOCK",
+                currency_code="KRW", exchange_code="KRX", multiplier=1.0)[BALANCE_COLUMNS]
     )
 
 
-def transform_overseas_balance(
-    raw: dict,
-    standard_date: str,
-    config: dict,
-) -> pd.DataFrame:
+def transform_overseas_balance(raw: dict, standard_date: str, config: dict) -> pd.DataFrame:
     """
-    해외주식 잔고 원시 응답 → BALANCE_COLUMNS DataFrame
-
-    currency_code / exchange_code는 API 응답(tr_crcy_cd, ovrs_excg_cd)에서 직접 매핑된다.
-
-    Args:
-        raw: KIS get_overseas_balance() 원시 JSON (output1 키 포함)
-        standard_date: 기준일자 (YYYY-MM-DD)
-        config: Airflow Variable 계좌 설정 딕셔너리
-
-    Returns:
-        BALANCE_COLUMNS 스키마의 DataFrame (보유 종목이 없으면 빈 DataFrame)
+    Purpose: 해외주식 잔고 변환 (TTTS3012R output1, 통화·거래소는 응답값)
+    Parameter:
+        - raw: get_overseas_balance() 원시 JSON
+        - standard_date: 기준일
+        - config: 계좌 설정 dict
+    Input: 없음
+    Output: BALANCE_COLUMNS DataFrame (보유 종목 없으면 빈 DataFrame)
     """
-    account_code = f"{config['account']}-{config['product_code']}"
-    account_name = config["type"]
     df = pd.json_normalize(raw["output1"])
     if df.empty:
         return pd.DataFrame()
     return normalize_numeric(
         df.rename(columns=KIS_RENAME["overseas_balance"])
-        .assign(
-            standard_date=standard_date,
-            account_code=account_code,
-            account_name=account_name,
-            asset_type="STOCK",
-            multiplier=1.0,
-        )
-        [BALANCE_COLUMNS]
+        .assign(standard_date=standard_date, **_account(config), asset_type="STOCK", multiplier=1.0)[BALANCE_COLUMNS]
     )
 
 
 def transform_pension_fund_balance(
-    raw: dict,
-    standard_date: str,
-    config: dict,
-    product_code: str,
-    fund_price: float | None,
-    product_name: str | None,
+    raw: dict, standard_date: str, config: dict, product_code: str, fund_price: float | None, product_name: str | None
 ) -> pd.DataFrame:
     """
-    연금저축 펀드 잔고 변환 및 좌수·매입단가 역산
-
-    CTRP6548R output1[1](펀드/MMW 행)에서 평가금액·매입금액을 읽고,
-    market.fund_price_daily의 기준가(fund_price)를 사용해 좌수와 매입단가를 역산한다.
-
-    역산 공식:
-        holding_quantity   = 평가금액 / fund_price / 0.001
-        unit_purchase_price = 매입금액 / holding_quantity / 0.001
-
-    fund_price가 None이면 예외를 던진다. 좌수 자체가 평가금액의 역산 결과라
-    NAV 없이는 계산할 방법이 없다 — 직전 값으로 채우지 않는다.
-
-    [펀드 미보유] 펀드/MMW 행이 없거나 평가금액이 0이면 빈 DataFrame을 반환한다.
-    좌수는 평가금액의 역산 결과라, 평가금액 0은 곧 좌수 0이고 매입단가 역산이
-    0으로 나누어진다(NaN/inf). 보유하지 않은 자산은 행을 만들지 않는 것이 맞다.
-
-    [검증 순서] 펀드 보유 여부를 fund_price 검증보다 먼저 판정한다. 순서가 반대면
-    펀드를 하나도 안 든 계좌가 그날 NAV 결측만으로 실패한다 — 쓰지도 않는 값이다.
-
-    Args:
-        raw: KIS get_account_balance() 원시 JSON
-        standard_date: 기준일자 (YYYY-MM-DD)
-        config: Airflow Variable 계좌 설정 딕셔너리
-        product_code: 펀드 표준코드 (Airflow param pension_fund_code)
-        fund_price: market.fund_price_daily에서 조회한 T-1 기준가 (없으면 None)
-        product_name: 펀드명 (없으면 None)
-
-    Returns:
-        BALANCE_COLUMNS 스키마의 단일 행 DataFrame.
-        펀드 미보유 시 같은 스키마의 빈 DataFrame.
-
-    Raises:
-        ValueError: 펀드를 보유했는데 fund_price가 None이거나 0일 때
+    Purpose: 연금저축 펀드 잔고 변환 — 평가금액/NAV/0.001 로 좌수, 매입금액으로 매입단가 역산
+    Parameter:
+        - raw: get_account_balance() 원시 JSON
+        - standard_date: 기준일
+        - config: 계좌 설정 dict
+        - product_code: 보유 펀드 표준코드
+        - fund_price: 기준일 NAV (없으면 None)
+        - product_name: 펀드명
+    Input: 없음
+    Output: BALANCE_COLUMNS 1행 DataFrame. 펀드 미보유(행 없음·평가금액 0·좌수 0)면 빈 DataFrame.
+            보유했는데 NAV 없으면 ValueError (보유 여부를 NAV 검증보다 먼저 판정)
     """
-    account_code = f"{config['account']}-{config['product_code']}"
-    account_name = config["type"]
-
     rows = raw.get("output1") or []
-    print(f"[{account_code}] 계좌잔고 원시응답 output1 ({len(rows)}행): {rows}")
-    # index 1 = "펀드/MMW" 행 (KIS API 응답 순서 고정)
-    if len(rows) < 2:
+    if len(rows) < 2:                            # index 1 = "펀드/MMW" 행
         return pd.DataFrame(columns=BALANCE_COLUMNS)
-
     df = pd.json_normalize(rows).loc[[1]].rename(columns=KIS_RENAME["account_balance"])
-
-    df["total_purchase_amount"] = df["total_purchase_amount"].astype(float)
-    df["total_evaluation_amount"] = df["total_evaluation_amount"].astype(float)
-    df["total_profit_amount"] = df["total_profit_amount"].astype(float)
-
+    df[_AMOUNT_COLS] = df[_AMOUNT_COLS].astype(float)
     if not (df["total_evaluation_amount"] > 0).all():
         return pd.DataFrame(columns=BALANCE_COLUMNS)
-
     if not fund_price:
-        raise ValueError(f"fund_price가 없다 — {account_code} 평가 불가 (NAV 결측)")
-
+        raise ValueError(f"fund_price가 없다 — {standard_date} 연금저축 펀드 평가 불가 (NAV 결측)")
     df = df.assign(
-        standard_date=standard_date,
-        account_code=account_code,
-        account_name=account_name,
-        asset_type="FUND",
-        currency_code="KRW",
-        exchange_code="KRX",
-        product_code=product_code,
-        product_name=product_name,
-        unit_market_price=fund_price,
-        multiplier=0.001,
+        standard_date=standard_date, **_account(config), asset_type="FUND", currency_code="KRW",
+        exchange_code="KRX", product_code=product_code, product_name=product_name,
+        unit_market_price=fund_price, multiplier=0.001,
     )
-
     df["holding_quantity"] = (df["total_evaluation_amount"] / fund_price / 0.001).round(0)
-    # 평가금액이 NAV×0.001의 절반 미만이면 반올림으로 좌수가 0이 된다(잔량 소수점 등)
-    if not (df["holding_quantity"] > 0).all():
+    if not (df["holding_quantity"] > 0).all():   # 잔량 소수점 → 반올림 좌수 0
         return pd.DataFrame(columns=BALANCE_COLUMNS)
-
     df["unit_purchase_price"] = (df["total_purchase_amount"] / df["holding_quantity"] / 0.001).round(0)
-
-    if (df["total_purchase_amount"] > 0).all():
-        df["valuation_profit_rate"] = (df["total_profit_amount"] / df["total_purchase_amount"] * 100).round(2)
-    else:
-        df["valuation_profit_rate"] = 0.0
-
+    purchase = df["total_purchase_amount"]
+    df["valuation_profit_rate"] = (df["total_profit_amount"] / purchase * 100).round(2) if (purchase > 0).all() else 0.0
     return normalize_numeric(df)[BALANCE_COLUMNS]
 
 
-def transform_cma_cash_balance(
-    raw: dict,
-    standard_date: str,
-    config: dict,
-) -> pd.DataFrame:
+def transform_cma_cash_balance(raw: dict, standard_date: str, config: dict) -> pd.DataFrame:
     """
-    CMA 현금 잔고 변환
-
-    CTRP6548R output1[14](외화단기사채 행)에서 평가금액을 읽어 CMA 잔고로 처리한다.
-    CMA는 수량 개념이 없으므로 holding_quantity=1, unit_*_price=평가금액으로 고정한다.
-
-    Args:
-        raw: KIS get_account_balance() 원시 JSON
-        standard_date: 기준일자 (YYYY-MM-DD)
-        config: Airflow Variable 계좌 설정 딕셔너리
-
-    Returns:
-        BALANCE_COLUMNS 스키마의 단일 행 DataFrame (잔고 없으면 빈 DataFrame)
+    Purpose: CMA 현금 잔고 변환 (output1[14] 외화단기사채 행, 수량 1·단가=평가금액)
+    Parameter:
+        - raw: get_account_balance() 원시 JSON
+        - standard_date: 기준일
+        - config: 계좌 설정 dict
+    Input: 없음
+    Output: BALANCE_COLUMNS 1행 DataFrame (응답 비면 빈 DataFrame)
     """
-    account_code = f"{config['account']}-{config['product_code']}"
-    account_name = config["type"]
     df = pd.json_normalize(raw["output1"])
     if df.empty:
         return pd.DataFrame()
-    # index 14 = "외화단기사채" 행 위치에 CMA 현금 잔고가 반환됨 (KIS API 응답 순서 고정)
     df = df.loc[[14]].rename(columns=KIS_RENAME["account_balance"])
-
-    df["total_purchase_amount"] = df["total_purchase_amount"].astype(float)
-    df["total_evaluation_amount"] = df["total_evaluation_amount"].astype(float)
-    df["total_profit_amount"] = df["total_profit_amount"].astype(float)
-
+    df[_AMOUNT_COLS] = df[_AMOUNT_COLS].astype(float)
+    amount = df["total_evaluation_amount"]
     df = df.assign(
-        standard_date=standard_date,
-        account_code=account_code,
-        account_name=account_name,
-        total_purchase_amount=lambda x: x["total_evaluation_amount"],
-        asset_type="CASH",
-        currency_code="KRW",
-        exchange_code="KRX",
-        product_code="CMA",
-        product_name="CMA",
-        unit_market_price=lambda x: x["total_evaluation_amount"],
-        multiplier=1.0,
-        holding_quantity=1.0,
-        unit_purchase_price=lambda x: x["total_evaluation_amount"],
+        standard_date=standard_date, **_account(config), total_purchase_amount=amount, asset_type="CASH",
+        currency_code="KRW", exchange_code="KRX", product_code="CMA", product_name="CMA",
+        unit_market_price=amount, multiplier=1.0, holding_quantity=1.0, unit_purchase_price=amount,
         valuation_profit_rate=0.0,
     )
+    return normalize_numeric(df)[BALANCE_COLUMNS]
 
+
+def transform_rp_note_balance(raw: dict, standard_date: str, config: dict) -> pd.DataFrame:
+    """
+    Purpose: 위탁계좌 RP/발행어음 잔고 변환 (CTRP6548R output1 의 "RP/발행어음" 행, 둘을 구분하지 않고 1행)
+    Parameter:
+        - raw: get_account_balance() 원시 JSON
+        - standard_date: 기준일
+        - config: 계좌 설정 dict
+    Input: 없음
+    Output: BALANCE_COLUMNS 1행 (asset_type=CASH, product_code=RP_NOTE). 잔고 0이면 빈 DataFrame.
+            행 수·합계 불일치(행 순서 변경 의심)면 ValueError
+    """
+    rows, names = raw.get("output1") or [], KIS.ACCOUNT_BALANCE_ROW_NAMES
+    # 행 이름 없음(순서로 구분) → 행 수 다르면 실패
+    if len(rows) != len(names):
+        raise ValueError(f"자산현황 행 수 {len(rows)} ≠ {len(names)} — 행 순서 변경 의심, RP 적재 중단")
+    evals = [float(r.get("evlu_amt") or 0) for r in rows]
+    # 행 합 = 합계 행 (1원 오차 허용)
+    if abs(sum(evals[:-1]) - evals[-1]) > 1:
+        raise ValueError(f"자산현황 행 합 {sum(evals[:-1]):,.0f} ≠ 합계 {evals[-1]:,.0f} — 행 순서 변경 의심")
+    row = rows[names.index("RP/발행어음")]
+    evaluation = float(row.get("evlu_amt") or 0)
+    if evaluation == 0:
+        return pd.DataFrame(columns=BALANCE_COLUMNS)
+    purchase, profit = float(row.get("pchs_amt") or 0), float(row.get("evlu_pfls_amt") or 0)
+    # 원금·경과이자 그대로 유지 (CMA 와 달리 매입≠평가)
+    df = pd.DataFrame([{
+        "standard_date": standard_date, **_account(config), "product_code": "RP_NOTE",
+        "product_name": "RP/발행어음", "asset_type": "CASH", "currency_code": "KRW", "exchange_code": "KRX",
+        "multiplier": 1.0, "holding_quantity": 1.0, "unit_purchase_price": purchase, "unit_market_price": evaluation,
+        "total_purchase_amount": purchase, "total_evaluation_amount": evaluation, "total_profit_amount": profit,
+        "valuation_profit_rate": round(profit / purchase * 100, 2) if purchase else 0.0,
+    }])
     return normalize_numeric(df)[BALANCE_COLUMNS]
 
 
 def transform_exchange_rate(raw_list: list, standard_date: str) -> pd.DataFrame:
     """
-    환율 원시 응답 → EXCHANGE_RATE_COLUMNS DataFrame
-
-    KIS API는 GBP·EUR를 달러 기준(달러/파운드, 달러/유로)으로 반환하므로,
-    원/달러 기준가를 곱해 원화 기준(원/파운드, 원/유로)으로 교차 환산한다.
-
-    Args:
-        raw_list: KIS get_exchange_rate() 응답 리스트 (통화별 dict)
-        standard_date: 기준일자 (YYYY-MM-DD)
-
-    Returns:
-        EXCHANGE_RATE_COLUMNS 스키마의 DataFrame (USD, JPY, GBP, EUR 4행)
+    Purpose: 환율 응답 변환 + 달러 기준 GBP·EUR 를 원/달러로 교차 환산
+    Parameter:
+        - raw_list: get_exchange_rate() 응답 리스트
+        - standard_date: 기준일
+    Input: 없음
+    Output: EXCHANGE_RATE_COLUMNS DataFrame (USD, JPY, GBP, EUR)
     """
-    df = pd.concat(
-        [pd.json_normalize(r["output1"]) for r in raw_list],
-        ignore_index=True,
-    )
-    df.rename(columns=KIS_RENAME["exchange_rate"], inplace=True)
+    df = pd.concat([pd.json_normalize(r["output1"]) for r in raw_list], ignore_index=True)
+    df = df.rename(columns=KIS_RENAME["exchange_rate"])
     df.insert(0, "standard_date", standard_date)
     df[_PRICE_COLS] = df[_PRICE_COLS].astype(float)
-
-    # 달러/파운드, 달러/유로 → 원/파운드, 원/유로 (원/달러 기준 교차 환산)
-    usd_krw = df.loc[df["currency_pair_name"] == "원/달러", _PRICE_COLS].values[0]
+    usd_krw = df.loc[df["currency_pair_name"] == "원/달러", _PRICE_COLS].to_numpy()[0]
     cross_mask = df["currency_pair_name"].isin(["달러/파운드", "달러/유로"])
-
     cross = df[cross_mask].copy()
     cross[_PRICE_COLS] = cross[_PRICE_COLS].multiply(usd_krw, axis=1)
     cross["currency_pair_name"] = cross["currency_pair_name"].str.replace("달러/", "원/")
-
     result = pd.concat([df[~cross_mask], cross], ignore_index=True)
     result["currency_code"] = result["currency_pair_name"].map(_CURRENCY_CODE_MAP)
-
     return result[EXCHANGE_RATE_COLUMNS]
