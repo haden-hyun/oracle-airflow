@@ -74,15 +74,15 @@
 
 | 문서 | 내용 |
 |---|---|
-| [`airflow3_A_code_impact.md`](airflow3_A_code_impact.md) | DAG·플러그인 코드의 3.x 영향(파일:라인 표, ruff AIR 결과, 수정 예시) |
-| [`airflow3_B_infra.md`](airflow3_B_infra.md) | 컴포넌트·설정 키·인증·이미지·PG·REST API v2 영향, 3.x Dockerfile/compose 초안 |
-| [`airflow3_C_release_strategy.md`](airflow3_C_release_strategy.md) | 릴리스 타임라인, 2.x EOL, 공식 업그레이드 경로, 신규 기능의 도입 가치, 단계적 전략 |
-| [`airflow3_D_backup_discord.md`](airflow3_D_backup_discord.md) | PG13→16 백업·이관 런북(검증 SQL, 롤백), Discord 알림 방식 비교와 콜백 전체 코드 |
-| [`airflow3_E_parallel_cutover.md`](airflow3_E_parallel_cutover.md) | 블루/그린 vs in-place 평가, 같은 서버 충돌, 이중 실행 격리, 컷오버·롤백·제거 절차 |
-| [`airflow3_F_variables_naming.md`](airflow3_F_variables_naming.md) | Variable 현황과 대안 비교, DAG 명명 규칙과 dag_id 변경 영향. 계좌번호를 config에 두는 안은 G로 대체됨 |
-| [`airflow3_G_secrets_schema.md`](airflow3_G_secrets_schema.md) | secrets YAML 스키마(list+id, 정규화), 저장 방식, pydantic 검증, 비밀 경계, 로더 코드 |
-| [`airflow3_H_key_expiry_alert.md`](airflow3_H_key_expiry_alert.md) | KIS·Upbit 키 유효기간, 만료 점검 실행 방식(make_token + skip), 단계 알림 정책, 구현·테스트 |
-| [`airflow3_I_yaml_driven_automation.md`](airflow3_I_yaml_driven_automation.md) | 하드코딩 16곳, 동적 태스크 매핑, 키 교체·계좌 변경 함정, YAML 파손 시 동작, 변경 절차 |
+| [`airflow3_A_code_impact.md`](../airflow3_A_code_impact.md) | DAG·플러그인 코드의 3.x 영향(파일:라인 표, ruff AIR 결과, 수정 예시) |
+| [`airflow3_B_infra.md`](../airflow3_B_infra.md) | 컴포넌트·설정 키·인증·이미지·PG·REST API v2 영향, 3.x Dockerfile/compose 초안 |
+| [`airflow3_C_release_strategy.md`](../airflow3_C_release_strategy.md) | 릴리스 타임라인, 2.x EOL, 공식 업그레이드 경로, 신규 기능의 도입 가치, 단계적 전략 |
+| [`airflow3_D_backup_discord.md`](../airflow3_D_backup_discord.md) | PG13→16 백업·이관 런북(검증 SQL, 롤백), Discord 알림 방식 비교와 콜백 전체 코드 |
+| [`airflow3_E_parallel_cutover.md`](../airflow3_E_parallel_cutover.md) | 블루/그린 vs in-place 평가, 같은 서버 충돌, 이중 실행 격리, 컷오버·롤백·제거 절차 |
+| [`airflow3_F_variables_naming.md`](../airflow3_F_variables_naming.md) | Variable 현황과 대안 비교, DAG 명명 규칙과 dag_id 변경 영향. 계좌번호를 config에 두는 안은 G로 대체됨 |
+| [`airflow3_G_secrets_schema.md`](../airflow3_G_secrets_schema.md) | secrets YAML 스키마(list+id, 정규화), 저장 방식, pydantic 검증, 비밀 경계, 로더 코드 |
+| [`airflow3_H_key_expiry_alert.md`](../airflow3_H_key_expiry_alert.md) | KIS·Upbit 키 유효기간, 만료 점검 실행 방식(make_token + skip), 단계 알림 정책, 구현·테스트 |
+| [`airflow3_I_yaml_driven_automation.md`](../airflow3_I_yaml_driven_automation.md) | 하드코딩 16곳, 동적 태스크 매핑, 키 교체·계좌 변경 함정, YAML 파손 시 동작, 변경 절차 |
 
 ### 문서 간 충돌의 정리
 

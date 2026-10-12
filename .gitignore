@@ -19,3 +19,8 @@ __pycache__/
 # db-data/
 
 data/
+
+# 자격증명·계좌번호 원본 (서버에만 존재) — 템플릿과 README만 커밋
+secrets/*
+!secrets/*.example.yaml
+!secrets/README.md
