@@ -23,7 +23,7 @@
 ## 2. 처음 만들기
 
 ```bash
-cd ~/airflow3
+cd ~/airflow
 cp secrets/asset_flow.secrets.example.yaml secrets/asset_flow.secrets.yaml
 vi secrets/asset_flow.secrets.yaml           # 더미 값을 실제 값으로
 chmod 700 secrets && chmod 640 secrets/asset_flow.secrets.yaml
@@ -32,7 +32,7 @@ chmod 700 secrets && chmod 640 secrets/asset_flow.secrets.yaml
 ## 3. 검증
 
 ```bash
-cd ~/airflow3
+cd ~/airflow
 docker compose exec airflow-scheduler bash -c \
   'cd /opt/airflow/plugins && python -m asset_flow.secrets_config /opt/airflow/secrets/asset_flow.secrets.yaml'
 # OK: credentials=N accounts=M  (+ 14일 내 만료 키 WARN)
@@ -45,7 +45,7 @@ docker compose exec airflow-scheduler bash -c \
 ## 4. 값 바꾸기
 
 ```bash
-cd ~/airflow3/secrets
+cd ~/airflow/secrets
 cp -p asset_flow.secrets.yaml asset_flow.secrets.yaml.new && vi asset_flow.secrets.yaml.new
 # 3번 검증을 .new 파일로 실행 → 통과하면
 mv asset_flow.secrets.yaml.new asset_flow.secrets.yaml      # 같은 디렉터리 안 mv = 원자적 교체

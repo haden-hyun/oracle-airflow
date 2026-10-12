@@ -17,10 +17,10 @@
 
 ## 인프라
 
-- **Airflow 버전**: 3.3.2 (Python 3.12, 이미지 `local/airflow3:3.3.2-py3.12`)
+- **Airflow 버전**: 3.3.2 (Python 3.12, 이미지 `local/airflow:3.3.2-py3.12`)
 - **Executor**: LocalExecutor (단일 서버)
 - **컴포넌트**: `api-server`(UI·API) · `scheduler` · `dag-processor` · `postgres` (triggerer 는 profile 로 비활성)
-- **메타 DB**: PostgreSQL 16 (Docker 내부, 볼륨 `airflow3_pgdata16`, 호스트 포트 미노출)
+- **메타 DB**: PostgreSQL 16 (Docker 내부, 볼륨 `airflow_pgdata16`, 호스트 포트 미노출)
 - **자산 DB**: PostgreSQL 16 (호스트 서버, `host.docker.internal` 경유, `.env` 의 `AIRFLOW_CONN_POSTGRES_ASSET`)
 - **인증**: FAB auth manager (관리자 계정은 `.env` 의 `_AIRFLOW_WWW_USER_*`)
 - **알림**: Discord (`ASSET_FLOW_ENV=prod` → 운영 채널 `discord_alert`, 그 외 → 테스트 채널 `discord_alert_test`)
@@ -61,7 +61,7 @@ docker compose down          # -v 금지 (메타 DB 볼륨 삭제됨)
 ### 전체 프로젝트 구조
 
 ```
-airflow3/
+airflow/
 ├── dags/
 │   ├── config/asset_flow.yaml                  # 비밀 아닌 설정 (테이블·펀드·수기 유형·만료 알림 규칙)
 │   ├── auth_issue_api_tokens.py                # 06:50 KIS 토큰 발급 + API 키 만료·설정 정합성 점검
@@ -217,7 +217,7 @@ evaluation_amount = 1550000   # validate 태스크가 좌수 오타를 이 값�
 ### 테스트
 
 ```bash
-docker run --rm -u 1001:0 -v $PWD:/w -w /w -e HOME=/tmp --entrypoint bash local/airflow3:3.3.2-py3.12 \
+docker run --rm -u 1001:0 -v $PWD:/w -w /w -e HOME=/tmp --entrypoint bash local/airflow:3.3.2-py3.12 \
   -c "pip install -q --no-deps --target /tmp/pt pytest iniconfig pluggy && PYTHONPATH=/w/plugins:/tmp/pt python -m pytest -q tests"
 ```
 
