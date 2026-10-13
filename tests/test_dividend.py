@@ -10,7 +10,7 @@ from asset_flow.transformers import dividend_transformer as t
 D = dt.date
 HOL = {D(2026, 10, 9)}                                               # 한글날 (금)
 
-KSD = [  # HHKDB669102C0 output1 (2026-10-13 실측 발췌)
+KSD = [  # HHKDB669102C0 output1 발췌
     {"record_date": "20260915", "sht_cd": "476800", "isin_name": "삼성KODEX 한국부동산리츠인프라부동산상장",
      "divi_kind": "", "face_val": "0", "per_sto_divi_amt": "60", "divi_rate": "1.18", "stk_divi_rate": "0.00",
      "divi_pay_dt": "2026/09/17", "stk_div_pay_dt": "", "odd_pay_dt": "", "stk_kind": "보통", "high_divi_gb": ""},
@@ -30,7 +30,7 @@ OPR = [  # CTRGT011R output
     {"rght_type_cd": "03", "pdno": "ORCL", "prdt_name": "ORACLE CORP", "acpl_bass_dt": "20260710",
      "crcy_cd": "USD", "alct_frcr_unpr": "0.50000", "dfnt_yn": "Y"},
     {"rght_type_cd": "03", "pdno": "NVDA", "prdt_name": "NVIDIA CORP", "acpl_bass_dt": "20260206",
-     "crcy_cd": "USD", "alct_frcr_unpr": "11.00000", "dfnt_yn": "Y"},             # 권리종합에 없는 행 (실측)
+     "crcy_cd": "USD", "alct_frcr_unpr": "11.00000", "dfnt_yn": "Y"},             # 권리종합에 없는 행
 ]
 ICE = [  # HHDFS78330900 output1 (+SYMB)
     {"SYMB": "ORCL", "anno_dt": "20260610", "ca_title": "현금배당", "div_lock_dt": "20260710", "record_dt": "20260710",

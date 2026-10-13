@@ -1,5 +1,5 @@
 """
-계좌 kind 별 수집 디스패치 (account_ingest_asset_daily·account_rebuild_ledger_assets 공용)
+계좌 kind 별 수집 디스패치 (자산·재적재 DAG 공용) + Deps (시세·배당 파이프라인도 사용)
 
 - 진입점: collect_account(account_id, dates, deps) — 수집 → 0건이면 예외 → (standard_date, account_code) 적재
 - HANDLERS: secrets kind 7종 → 계좌 1개의 BALANCE_COLUMNS DataFrame

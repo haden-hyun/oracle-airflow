@@ -23,7 +23,7 @@ DAG_DOC = """
 | `generate_tokens` | `TokenManager.ensure_all` — credential 별 발급·실패 격리. 발급 금지 모드에선 유효 토큰 존재만 검증 |
 | `check_key_expiry` | D-14·D-7, D-3 부터 매일, 구간 내 월요일 알림 + account_master 대조 + Upbit 만료일 대조 |
 
-> 환율 DAG `wait_for_token` 은 tokens.json 의 유효 토큰 존재로 판정한다 → `check_key_expiry` 실패와 무관.
+> 환율·시세·배당 DAG 의 `wait_for_token` 은 tokens.json 의 유효 토큰 존재로 판정한다(발급은 이 DAG 만) → `check_key_expiry` 실패와 무관.
 """
 
 

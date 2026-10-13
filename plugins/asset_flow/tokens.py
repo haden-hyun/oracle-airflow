@@ -1,7 +1,7 @@
 """
-KIS 액세스 토큰 관리 v2 (credential 단위 발급·저장·재사용)
+KIS 액세스 토큰 관리 (credential 단위 발급·저장·재사용)
 
-- 진입점: TokenManager(cfg).token_for(cred_id) / ensure_all(cred_ids)
+- 진입점: token_for(발급 가능) / ensure_all / existing_token·has_valid_token(발급 안 함 — 시세·배당·환율·펀드 DAG)
 - 저장: TOKEN_DIR/tokens.json {"format": 2, "credentials": {id: {token, fp, issued_at, expires_at}}} — 원자적 교체
 - 유효: 키 지문(fp) 일치 + 만료까지 1시간 이상. 발급은 flock 잠금 후 재확인 → credential 별 격리
 - TOKEN_ISSUE_ENABLED(기본 false): 금지면 HTTP·잠금 0회 (테스트·점검용 안전장치)

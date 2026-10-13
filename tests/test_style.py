@@ -9,7 +9,7 @@ SECTIONS = ("Purpose:", "Parameter:", "Input:", "Output:")
 
 def _sources() -> list[Path]:
     """
-    Purpose: 규칙 검사 대상 신규 소스 목록
+    Purpose: 규칙 검사 대상 소스 목록
     Parameter: 없음
     Input: plugins/, dags/, tests/conftest.py
     Output: 파일 경로 리스트

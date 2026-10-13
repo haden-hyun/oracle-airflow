@@ -3,7 +3,7 @@
 
 - KIS FHKST03030100 으로 T-1 환율 조회, GBP·EUR 는 원/달러로 교차 환산
 - 키: secrets services.exchange_rate_credential / 적재: config tables.exchange_rate_daily
-- 선행: auth_issue_api_tokens.generate_tokens / 후행: account_ingest_asset_daily
+- 선행: auth_issue_api_tokens.generate_tokens / 후행: account_ingest_asset_daily, account_ingest_dividend(미국 추정)
 """
 
 from datetime import datetime, timedelta

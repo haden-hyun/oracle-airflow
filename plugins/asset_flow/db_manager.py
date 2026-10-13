@@ -585,10 +585,10 @@ def upsert_products(engine: Engine, base_date: str, tracked_after_sale_days: int
     Parameter:
         - engine: 업무 DB 엔진
         - base_date: 실행일 T (YYYY-MM-DD) — 매도 후 추적 기준 T-1
-        - tracked_after_sale_days: 매도 후 추적 일수 (30)
+        - tracked_after_sale_days: 매도 후 추적 일수 (config)
     Input: account.asset_daily
     Output: {"total", "tracked", "new"} (+ market.product INSERT/UPDATE, 삭제 없음, 단일 트랜잭션).
-            price_source·market·source_symbol 은 INSERT 때만 정함 (사람이 고친 값 보존)
+            asset_type·market·currency_code·price_source·source_symbol 은 INSERT 때만 정함 (사람이 고친 값 보존)
     """
     ensure_writable(engine)
     sql = text(f"""

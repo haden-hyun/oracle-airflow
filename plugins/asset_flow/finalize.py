@@ -1,5 +1,5 @@
 """
-적재 DAG 공용 마무리 단계 (자산 적재·수기 원장 입력·재적재 DAG 의 마지막)
+적재 DAG 공용 마무리 단계 (finalize = 자산·수기 원장·재적재 DAG, fail_if_upstream_failed 는 시세·배당 DAG 도 사용)
 
 - refresh_dashboard_views: 앞 단계 결과와 무관하게(all_done) 대시보드 MV 갱신 프로시저 CALL
 - fail_if_upstream_failed: 앞 단계에 실패가 있으면 run 을 실패로 (마지막 태스크 성공이 run 실패를 가리지 않게)

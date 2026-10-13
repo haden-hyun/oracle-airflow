@@ -1,10 +1,10 @@
 """
 한국투자증권(KIS) OpenAPI 클라이언트
 
-- 토큰은 호출부가 TokenManager.token_for() 로 받아 주입
-- config 는 기존 Variable 모양 dict (secrets_config.kis_client_config 로 생성)
+- 토큰은 호출부가 주입 (token_for 또는 existing_token)
+- config 는 secrets_config.kis_client_config 로 만든 dict
 - 제공: get_overseas_balance / get_domestic_balance / get_account_balance / get_exchange_rate (원시 JSON 반환)
-- 공통: _request(단건, rt_cd 검사·간격 유지) / _get_pages(tr_cont 연속조회) — 신규 조회만 사용
+- 공통: _request(단건, rt_cd 검사·간격 유지) / _get_pages(tr_cont 연속조회) — 배당·시세 전용 (잔고·환율은 safe_request 직접)
 - 배당: get_ksd_dividend / get_period_rights / get_overseas_period_rights / get_overseas_rights_ice (원시 행)
 - 시세: get_domestic_daily_price / get_overseas_daily_price (원주가, 100행씩 날짜를 당겨 반복)
 - 계좌번호가 응답 본문(ctx_area_*·acno10)에 평문으로 올 수 있음 → _redact 로 실패 로그·예외에서 가림
@@ -73,7 +73,7 @@ class KISApiClient(BaseApiClient):
         Purpose: KIS 공통 인증 헤더 생성
         Parameter:
             - tr_id: 거래 ID
-            - tr_cont: 연속조회 ("" 첫 요청, "N" 다음 페이지). None 이면 기존 헤더만 (운영 잔고·환율 호출 불변)
+            - tr_cont: 연속조회 ("" 첫 요청, "N" 다음 페이지). None 이면 tr_cont·custtype 생략 (잔고·환율)
         Input: 없음
         Output: 헤더 dict (authorization, appKey, appSecret, tr_id [, tr_cont, custtype])
         """
@@ -90,7 +90,7 @@ class KISApiClient(BaseApiClient):
 
     def _request(self, name: str, params: dict, tr_cont: str = "") -> tuple[dict, str]:
         """
-        Purpose: KIS GET 1회 (요청 간격 유지 + rt_cd 검사) — 신규 조회의 단일 진입점
+        Purpose: KIS GET 1회 (요청 간격 유지 + rt_cd 검사) — 배당·시세 조회의 단일 진입점
         Parameter:
             - name: KIS.PATHS/TR_IDS 키
             - params: 쿼리 파라미터
@@ -135,7 +135,7 @@ class KISApiClient(BaseApiClient):
             ctx = {k.upper(): body.get(k) or "" for k in ctx_keys}
             if not any(v.strip() for v in ctx.values()):
                 return rows
-            params |= ctx                          # 공백 패딩 그대로 되돌려 보냄 (실측: 정상 동작)
+            params |= ctx                          # 공백 패딩 그대로 되돌려 보냄
             cont = "N"
         raise RuntimeError(f"KIS {KIS.TR_IDS[name]} 연속조회 {max_pages}페이지 초과")
 

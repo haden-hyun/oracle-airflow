@@ -117,7 +117,7 @@ class UpbitApiClient(BaseApiClient):
         import time
         from datetime import date, timedelta
 
-        # to 는 시간대 없으면 UTC (2026-10-13 실측). 일봉 d(KST) 시작 = d 00:00 UTC → end+1 00:00 UTC 이전 캔들부터
+        # to 는 시간대 없으면 UTC. 일봉 d(KST) 시작 = d 00:00 UTC → end+1 00:00 UTC 이전 캔들부터
         to = f"{date.fromisoformat(end) + timedelta(days=1)}T00:00:00"
         rows = []
         while True:

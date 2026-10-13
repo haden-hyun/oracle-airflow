@@ -3,7 +3,7 @@
 
 - PATHS·TR_IDS·PARAMS: 엔드포인트·거래 ID·고정 쿼리
 - EXCHANGE_RATE_PRODUCT_CODES, ACCOUNT_BALANCE_ROW_NAMES(CTRP6548R 행 순서)
-- 공통 헤더·연속조회: CUSTTYPE, REQUEST_INTERVAL, CONTINUE_CODES, MAX_PAGES (신규 조회 _request 경로만)
+- 공통 헤더·연속조회: CUSTTYPE, REQUEST_INTERVAL, CONTINUE_CODES, MAX_PAGES (_request 경로 전용)
 - 배당: DIVIDEND_RIGHT_TYPES, OVERSEAS_PRDT_TYPE, US_DIVIDEND_RIGHTS, ICE_DIVIDEND_TITLES
 - 시세: PRICE_PAGE_SIZE, OVERSEAS_PRICE_EXCD
 """
@@ -16,7 +16,7 @@ class KIS:
     PATHS: dict[str, str] = {
         # API명: OAuth 2.0 토큰 발급
         "token": "/oauth2/tokenP",
-        # API명: 투자계좌자산현황조회[v1_국내주식-048] → 금현물 및 RP/발행어음 조회용
+        # API명: 투자계좌자산현황조회[v1_국내주식-048] → 연금저축 펀드·CMA·RP/발행어음 행 조회용
         "account_balance": "/uapi/domestic-stock/v1/trading/inquire-account-balance",
         # API명: 해외주식 종목/지수/환율기간별시세[v1_해외주식-012] → 환율 조회용
         "exchange_rate": "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice",
@@ -79,7 +79,7 @@ class KIS:
         },
         "ksd_dividend": {"CTS": "", "GB1": "0", "HIGH_GB": ""},           # GB1 0 = 결산·중간 전체
         "period_rights": {
-            "INQR_DVSN": "03",                    # 01·02 는 같은 기간에도 '조회할 자료가 없습니다' (실측)
+            "INQR_DVSN": "03",                    # 01·02 는 '조회할 자료가 없습니다'
             "CUST_RNCNO25": "", "HMID": "", "RGHT_TYPE_CD": "", "PDNO": "", "PRDT_TYPE_CD": "",
             "CTX_AREA_NK100": "", "CTX_AREA_FK100": "",
         },
@@ -126,7 +126,7 @@ class KIS:
         "합계",
     ]
 
-    # ── 공통 헤더·연속조회 (_request 경로 전용 — 기존 잔고·환율 호출 헤더는 그대로) ──
+    # ── 공통 헤더·연속조회 (_request 경로 전용) ──
     CUSTTYPE: str = "P"                       # 개인
     REQUEST_INTERVAL: float = 0.35            # 같은 클라이언트의 연속 요청 최소 간격(초)
     CONTINUE_CODES: tuple[str, ...] = ("M", "F")   # 응답 헤더 tr_cont: 다음 페이지 있음 (D·E·"" = 끝)
@@ -139,5 +139,5 @@ class KIS:
     ICE_DIVIDEND_TITLES: dict[str, str] = {"현금배당": "CASH", "특별배당": "SPECIAL"}      # HHDFS78330900 ca_title → dividend_type
 
     # ── 시세 ──
-    PRICE_PAGE_SIZE: int = 100                # 국내·해외 일봉 1회 최대 행 (2026-10-13 실측)
+    PRICE_PAGE_SIZE: int = 100                # 국내·해외 일봉 1회 최대 행
     OVERSEAS_PRICE_EXCD: dict[str, str] = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}  # asset_daily.exchange_code → 시세 EXCD

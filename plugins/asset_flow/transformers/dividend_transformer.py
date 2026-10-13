@@ -4,7 +4,7 @@ KIS 배당 원시 응답 → dividend_event / dividend_receipt 레코드 (순수
 - transform_ksd_events: HHKDB669102C0 → 국내 일정 (ex_date = kr_ex_date 계산, API 에 락일 없음)
 - transform_us_events: CTRGT011R(금액) ⟗ HHDFS78330900(일정) → 미국 일정 (금액 미정 = dps NULL)
 - transform_receipts: CTRGA011R → 국내 계좌 수령 원장 (acno10·ctx 는 버리고 secrets account_code 만)
-- estimate_us_receipts: 미국 일정 × 락일 직전 asset_daily 수량 × 원천징수율 → 추정 원장
+- estimate_us_receipts: 미국 일정 × 락일 직전 asset_daily 수량 → 추정 원장 (세전·세금·환율 각각)
 - 레코드 = dict (컬럼 = config.schemas DIVIDEND_*_COLUMNS), 날짜는 datetime.date
 """
 
@@ -192,7 +192,7 @@ def transform_receipts(rows: list[dict], account_code: str, holidays: set[dt.dat
             "ex_date": kr_ex_date(record, holidays),
             "pay_date": parse_date(r.get("cash_dfrm_dt")),
             "holding_quantity": parse_num(r.get("cblc_qty")) or 0.0,     # 결제 기준 권리잔고
-            "gross_amount": gross,                                       # 세전 = 권리잔고 × 주당 (실측 46/46)
+            "gross_amount": gross,                                       # 세전 = 권리잔고 × 주당
             "tax_amount": parse_num(r.get("tax_amt")) or 0.0,            # 원천값 그대로 (ISA = 미징수 참고값)
             "currency_code": "KRW",
             "exchange_rate": None,
@@ -225,7 +225,7 @@ def estimate_us_receipts(events: list[dict], holdings: dict[tuple[str, str], lis
         - events: market.dividend_event US 행 (ex_date·pay_date 있는 것)
         - holdings: {(account_code, product_code): [(standard_date, 수량)] 오름차순} — asset_daily
         - usd_rates: [(standard_date, USD base_rate)] 오름차순 — exchange_rate_daily
-        - withholding_rate: 원천징수율 (config, 0.15)
+        - withholding_rate: 원천징수율 (config)
     Input: 없음
     Output: DIVIDEND_RECEIPT_COLUMNS 레코드 (right_type_code EST03 현금 / EST75 특별, is_estimated True).
             락일 직전 7일 안에 보유 행이 없거나 수량 0 이면 생략. 금액 미정이면 gross·tax None.

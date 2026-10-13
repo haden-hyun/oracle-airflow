@@ -5,7 +5,7 @@ Discord 알림 콜백 (Airflow 3.x 전용)
 - DAG 복구: @dag(on_success_callback=discord_recovery_callback) — 직전 같은 유형 run 이 실패였을 때만
 - 공개 전송: post_discord(payload) / make_payload(embed) — 만료·휴장일·import error 알림이 재사용
 - 웹후크: env ASSET_FLOW_ENV=prod → Connection discord_alert, 그 외 → discord_alert_test (password = 전체 URL)
-- 에러 본문은 secrets 비밀값(키·cano·계좌번호)과 CANO 쿼리를 가린 뒤 전송 (태스크 로그 마스킹과 별개 경로)
+- 에러 본문은 secrets 비밀값(키·cano·계좌번호)과 CANO·ACNT_PRDT_CD 쿼리를 가린 뒤 전송 (태스크 로그 마스킹과 별개 경로)
 """
 
 from __future__ import annotations
@@ -271,7 +271,7 @@ def _secret_values() -> list[str]:
 
         return sorted(set(secret_values(load_secrets(mask=False))), key=len, reverse=True)
     except Exception:
-        log.warning("[alerts] secrets 로드 실패 — 비밀값 치환 없이 CANO 쿼리만 가림")
+        log.warning("[alerts] secrets 로드 실패 — 비밀값 치환 없이 계좌 쿼리만 가림")
         return []
 
 

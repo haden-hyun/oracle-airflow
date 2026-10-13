@@ -22,14 +22,14 @@ DAG_DOC = """
 
 | Task | 내용 |
 |---|---|
-| `get_windows` | 조회 창 (정기: 일정 T−400~+60/120, 원장 T−100 / 수동 Param `start_date`·`end_date` = 백필) |
+| `get_windows` | 조회 창 (정기: config `dividend.windows` — 일정·원장·추정 / 수동 Param `start_date`·`end_date` = 백필) |
 | `wait_for_token` | 시세용 KIS 키 유효 토큰 대기 (데이터 센서). 이 DAG 는 어떤 키도 발급하지 않음 |
 | `list_targets` | 조회 종목: `market.product`(없으면 `asset_daily`) 400일 보유 이력 ∪ 원장 종목 |
 | `ingest_kr_events` / `ingest_us_events` | 종목별 일정 조회 → UPSERT (종목 단위 실패 격리, 실패 있으면 성공분 적재 후 태스크 실패) |
 | `list_receipt_accounts` | 원장 조회 계좌 **id** (config `dividend.receipt_kinds`) |
 | `ingest_receipts` (매핑, 이름=계좌 id) | 계좌 자기 키로 원장 조회 → UPSERT. 0건 = 정상 |
 | `wait_for_asset_daily` | 위탁(kis_stock) 계좌의 T−1 `asset_daily` 존재 대기 |
-| `estimate_us_receipts` | 미국 일정 × 락일 직전 수량 → 추정 원장 (원천징수 15%, 지급일 환율) |
+| `estimate_us_receipts` | 미국 일정 × 락일 직전 수량 → 추정 원장 (원천징수 config `dividend.us_withholding_rate`, 지급일 환율) |
 | `refresh_dashboard_views` | config `dividend.refresh_dashboard_views=true` 일 때만 MV 갱신 (기본 skip) |
 | `fail_if_upstream_failed` | 앞 단계 실패가 있으면 run 실패 |
 

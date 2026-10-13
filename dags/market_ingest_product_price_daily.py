@@ -1,8 +1,8 @@
 """
 상품 목록 · 일별 시세 빈 구간 채우기 DAG (매일 07:10 KST)
 
-- asset_daily 비현금 상품 → market.product upsert (is_tracked = 보유 중 또는 매도 후 30일)
-- 상품마다 [마지막 적재일+1 | 최근 5거래일] ~ T-1, 신규면 T-365 ~ T-1 (기획 T9 §4-3)
+- asset_daily 비현금 상품 → market.product upsert (is_tracked = 보유 중 또는 매도 후 n일, config)
+- 창: min(마지막 적재일+1, 최근 5거래일 시작) ~ T-1, 신규면 T-365 ~ T-1
 - 소스: KIS 국내(FHKST03010100)·미국(HHDFS76240000) 원주가, 업비트 일봉, KOFIA 펀드 기준가(스위치, 빈 날짜만)
 - 선행: 토큰·T-1 asset_daily 데이터 센서 / 늦은 run skip 없음 (이력 API — 과거를 덮지 않음) / 토큰 발급 안 함
 """
@@ -24,6 +24,7 @@ DAG_DOC = """
 
 | Task | 내용 |
 |---|---|
+| `get_dates` | 실행일 T·상한 T-1 (KST, 늦은 run 도 skip 안 함) |
 | `wait_for_token` / `wait_for_asset_daily` | 시세용 KIS 토큰 · T-1 asset_daily(KIS·업비트 활성 계좌 전부) 대기 |
 | `upsert_products` | asset_daily → `market.product` (이름·보유구간·is_tracked) |
 | `plan_fetch` | 상품별 수집 창 (신규 1년, 증분, 최근 5거래일 재수집, 재매수 최대 1년) |
@@ -93,7 +94,7 @@ def market_ingest_product_price_daily():
     @task.sensor(task_id="wait_for_asset_daily", **sensor)
     def wait_for_asset_daily(dates: dict) -> bool:
         """
-        Purpose: T-1 asset_daily 적재 대기 — API 수집 계좌 전부 (첫 계좌만 보고 통과해 신규 종목이 늦게 반영되는 것 방지)
+        Purpose: T-1 asset_daily 적재 대기 (API 수집 계좌 전부 — 신규 종목 누락 방지)
         Parameter:
             - dates: get_dates 결과
         Input: secrets 파일, account.asset_daily
@@ -173,7 +174,7 @@ def market_ingest_product_price_daily():
         from asset_flow.pipeline.price_plan import run_source
 
         if not load_app_config().price_ingest.fund_nav_enabled:
-            raise AirflowSkipException("price_ingest.fund_nav_enabled=false — KOFIA 이용 조건·TDF2055 정정 확인 전")
+            raise AirflowSkipException("price_ingest.fund_nav_enabled=false")
         res = run_source("FUND_NAV", plan.get("FUND_NAV", []))
         mark(FUND_PRICE, end=dates["end"], source="KOFIA", rows=res["rows"])
         if res["failed"]:

@@ -71,6 +71,6 @@ def test_alert_redact_survives_missing_secrets(monkeypatch):
 
 
 def test_legacy_kis_headers_unchanged():
-    # 운영 잔고·환율 호출 헤더는 그대로 (custtype·tr_cont 는 신규 조회만)
+    # 운영 잔고·환율 호출 헤더는 그대로 (custtype·tr_cont 는 배당·시세 조회만)
     h = KISApiClient("tok", KIS_CONF)._build_headers("TTTC8434R")
     assert set(h) == {"content-type", "authorization", "appKey", "appSecret", "tr_id"}

@@ -25,7 +25,7 @@ from asset_flow.secrets_config import kis_client_config
 from asset_flow.transformers import dividend_transformer as dt_
 
 log = logging.getLogger(__name__)
-EARLIEST = "2000-01-01"                          # Param start_date 하한 (KSD 는 기간 제한 없음, 2013~ 실측)
+EARLIEST = "2000-01-01"                          # Param start_date 하한
 EVENT_KEEP = ("ex_date", "pay_date", "per_share_dividend_amount", "announce_date", "product_name")
 RECEIPT_KEEP = ("gross_amount", "tax_amount", "exchange_rate", "pay_date")
 
@@ -91,7 +91,7 @@ def run_windows(base_date: str, params: dict, deps: Deps) -> dict:
 
 def kr_holidays(deps: Deps, start: str, end: str) -> set[dt.date]:
     """
-    Purpose: 국내 휴장일 = holidays XKRX(전 기간) ∪ market.trading_holiday KR(수동 포함, 2025~2027)
+    Purpose: 국내 휴장일 = holidays XKRX(전 기간) ∪ market.trading_holiday KR(수동 포함)
     Parameter:
         - deps: 의존성
         - start: 시작 YYYY-MM-DD
@@ -219,7 +219,7 @@ def ingest_receipts(account_id: str, win: dict, deps: Deps) -> int:
 
 def us_stock_accounts(deps: Deps) -> list:
     """
-    Purpose: 미국 주식 보유 가능 계좌 (추정 원장·asset_daily 센서 대상)
+    Purpose: 미국 주식 보유 가능 계좌 (추정 원장 대상)
     Parameter:
         - deps: 의존성
     Input: secrets
@@ -230,7 +230,7 @@ def us_stock_accounts(deps: Deps) -> list:
 
 def estimate_us_receipts(win: dict, deps: Deps) -> int:
     """
-    Purpose: 미국 추정 수령 원장 생성·적재 (락일 직전 asset_daily 수량 × 주당 × (1−원천징수) × 지급일 환율)
+    Purpose: 미국 추정 수령 원장 생성·적재 (세전 = 락일 직전 수량 × 주당, 세금 = 세전 × 원천징수율, 지급일 환율은 별도 열)
     Parameter:
         - win: run_windows 결과
         - deps: 의존성

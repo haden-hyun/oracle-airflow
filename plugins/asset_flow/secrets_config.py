@@ -291,7 +291,7 @@ def credential_fingerprint(cred: Credential) -> str:
 
 def kis_client_config(cred: Credential, acct: Account | None = None) -> dict:
     """
-    Purpose: 기존 KISApiClient·kis_transformer 가 받던 Variable 모양 dict 생성 (어댑터)
+    Purpose: KISApiClient·kis_transformer 용 config dict 생성
     Parameter:
         - cred: KIS credential
         - acct: 계좌 (환율처럼 계좌 불필요하면 None)
@@ -306,7 +306,7 @@ def kis_client_config(cred: Credential, acct: Account | None = None) -> dict:
 
 def secret_values(cfg: SecretsConfig) -> list[str]:
     """
-    Purpose: 로그 마스킹 대상 값 목록
+    Purpose: 마스킹 대상 비밀값 (태스크 로그·Discord 알림)
     Parameter:
         - cfg: 검증된 설정
     Input: 없음
@@ -381,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         old_fps = {c.id: credential_fingerprint(c) for c in prev.credentials}
         for a in cfg.accounts:
             if a.id in old_codes and old_codes[a.id] != a.account_code:
-                print(f"  WARN {a.id}: account_code 변경 — 업무 DB 마이그레이션 선행 여부 확인 (I §3.3)")
+                print(f"  WARN {a.id}: account_code 변경 — 업무 DB 의 account_code 마이그레이션 먼저 확인")
                 warn = True
         for c in cfg.credentials:
             if c.id in old_fps and old_fps[c.id] != credential_fingerprint(c):

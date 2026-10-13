@@ -2,7 +2,7 @@
 금융투자협회 전자공시(KOFIA) 펀드 기준가격 조회 클라이언트
 
 - 공개 화면이 쓰는 XML 서비스(DISFundStdPrcStutSO), 인증 없음
-- get_fund_nav_history(code, start, end): 기준일별 기준가 (기간 제한 없음, 2년 494행 1회 실측)
+- get_fund_nav_history(code, start, end): 기준일별 기준가 (기간 제한 없음)
 """
 
 from __future__ import annotations

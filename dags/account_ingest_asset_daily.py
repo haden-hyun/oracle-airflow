@@ -50,7 +50,7 @@ secrets 의 활성 계좌별 T-1 잔고·평가금액을 `account.asset_daily` �
 )
 def account_ingest_asset_daily():
     """
-    Purpose: DAG 구성 (기준일 → 데이터 센서 2 → 계좌별 매핑 수집 → 대시보드 갱신)
+    Purpose: DAG 구성 (기준일 → 데이터 센서 2 → 계좌별 매핑 수집 → 대시보드 갱신·실패 전파)
     Parameter: 없음
     Input: 없음
     Output: 없음

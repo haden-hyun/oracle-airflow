@@ -57,7 +57,7 @@ class CredentialCheck(_Strict):
 
 
 class Dashboard(_Strict):
-    # 적재 직후 CALL 할 MV 갱신 프로시저 (스키마.이름, 대시보드 마이그레이션 009)
+    # 적재 직후 CALL 할 MV 갱신 프로시저 (스키마.이름, 대시보드 저장소 소유)
     refresh_procedure: str = Field(pattern=r"^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$")
 
 
@@ -70,7 +70,7 @@ class PriceIngest(_Strict):
 
 
 class DividendWindows(_Strict):
-    # 기준 = run 의 KST 날짜(T). 일정 −400일은 TTM·작년 같은 달 투영, 원장 −100일은 결산배당 50일 지연·정정 재조회
+    # 기준 = run 의 KST 날짜(T), 단위 일 (값의 근거는 yaml 주석)
     kr_event_back: int = Field(ge=1)            # 국내 일정 기준일 T−n
     kr_event_forward: int = Field(ge=0)         # 국내 일정 기준일 T+n
     us_event_back: int = Field(ge=60)           # 미국 일정 T−n (권리종합은 공시일 기준 → 기준일보다 앞서 시작)

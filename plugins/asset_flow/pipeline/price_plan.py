@@ -1,8 +1,8 @@
 """
 시세 빈 구간 채우기 — 수집 창 계산(순수) + 소스별 수집·적재 루프 (market_ingest_product_price_daily 본체)
 
-- plan_window / recent_start / plan_product: 상품 1개의 [start, end] (기획 T9 §4-3 규칙, 순수 함수)
-- build_plan: 대상 상품 × Param → {source: [Window dict]} (FUND_NAV 머리 갭 분기, 스위치 off 면 제외)
+- plan_window / recent_start / plan_product: 상품 1개의 [start, end] (순수 함수, plan_product 는 FUND_NAV 머리 갭 포함)
+- build_plan: 대상 상품 × Param → {source: [Window dict]} (FUND_NAV 스위치 off 면 제외)
 - run_source → ingest_source: 소스 하나의 상품을 차례로 수집·적재 (상품 단위 격리)
 - stale_tracked: 추적 종목 최신성 점검 대상
 - KIS 토큰은 발급하지 않음 (TokenManager.existing_token)
@@ -168,7 +168,7 @@ def ingest_source(source: str, products: list[dict], windows: list[Window], deps
         - deps: Deps (engine, tokens, secrets, app)
         - interval: 업비트·KOFIA 호출 간격 초 (KIS 는 클라이언트가 유지)
     Input: 소스 API, 업무 DB
-    Output: {"rows": 적재 행 수, "products": 처리 수, "failed": {code: 사유}} (+ DB 쓰기)
+    Output: {"rows": 시세=upsert 요청 행 / 펀드=실제 INSERT 행, "products": 처리 수, "failed": {code: 사유}} (+ DB 쓰기)
     """
     from asset_flow import db_manager as db
     from asset_flow.transformers.price_transformer import closed_upbit_candles, to_fund_frame, to_price_frame

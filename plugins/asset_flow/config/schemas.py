@@ -126,7 +126,7 @@ class DividendReceiptRecord(TypedDict):
     pay_date: dt.date | None
     holding_quantity: float
     gross_amount: float | None      # 원통화 세전 (추정 행만 NULL 허용)
-    tax_amount: float | None        # 원천 tax_amt 그대로 (ISA 는 미징수 참고값) / 추정 = 세전 × 15%
+    tax_amount: float | None        # 원천 tax_amt 그대로 (ISA 는 미징수 참고값) / 추정 = 세전 × 원천징수율
     currency_code: str
     exchange_rate: float | None           # 추정(USD) 행만: 지급일 이하 최신 USD 기준율
     is_estimated: bool
