@@ -3,7 +3,7 @@
 
 - 인증 엔드포인트는 요청마다 JWT 서명 (nonce=uuid4, 토큰 저장·재사용 없음)
 - 공개 엔드포인트(market/all, candles)는 인증 헤더 없음
-- 제공: get_balance / get_market_codes / get_daily_candles / get_api_keys
+- 제공: get_balance / get_market_codes / get_daily_candles / get_api_keys / get_day_candles(기간, 시세 DAG)
 """
 
 from __future__ import annotations
@@ -102,3 +102,28 @@ class UpbitApiClient(BaseApiClient):
             if candles:
                 result.append(candles[0])
         return result
+
+    def get_day_candles(self, market: str, start: str, end: str, interval: float = 0.35) -> list[dict]:
+        """
+        Purpose: 마켓 1개의 일 캔들 기간 조회 (count 200 씩 to 를 당겨 반복, 공개 API)
+        Parameter:
+            - market: KRW-BTC 등
+            - start: 캔들 시작일(KST) YYYY-MM-DD (포함)
+            - end: 캔들 시작일(KST) YYYY-MM-DD (포함)
+            - interval: 호출 간격 초 (기본 0.35)
+        Input: Upbit API (공개)
+        Output: 원시 캔들 리스트 (최근→과거, start~end 만). 미마감 캔들 제거는 transformer 몫
+        """
+        import time
+        from datetime import date, timedelta
+
+        # to 는 시간대 없으면 UTC (2026-10-13 실측). 일봉 d(KST) 시작 = d 00:00 UTC → end+1 00:00 UTC 이전 캔들부터
+        to = f"{date.fromisoformat(end) + timedelta(days=1)}T00:00:00"
+        rows = []
+        while True:
+            time.sleep(interval)
+            page = self._get("daily_candle", auth=False, params={"market": market, "count": 200, "to": to})
+            rows += [c for c in page if start <= c["candle_date_time_kst"][:10] <= end]
+            if len(page) < 200 or page[-1]["candle_date_time_kst"][:10] <= start:
+                return rows
+            to = page[-1]["candle_date_time_utc"]

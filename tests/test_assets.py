@@ -14,6 +14,9 @@ def test_asset_names_match_config_tables(app):
     assert a.ASSET_DAILY.name == f"{t.asset_daily.db_schema}.{t.asset_daily.table_name}"
     assert a.EXCHANGE_RATE.name == f"{t.exchange_rate_daily.db_schema}.{t.exchange_rate_daily.table_name}"
     assert a.FUND_PRICE.name == f"{t.fund_price_daily.db_schema}.{t.fund_price_daily.table_name}"
+    for asset, table in [(a.PRODUCT, t.product), (a.PRODUCT_PRICE, t.product_price_daily),
+                         (a.DIVIDEND_EVENT, t.dividend_event), (a.DIVIDEND_RECEIPT, t.dividend_receipt)]:
+        assert asset.name == f"{table.db_schema}.{table.table_name}"
 
 
 @pytest.mark.parametrize("dag_file,asset,task_id", [
@@ -24,6 +27,13 @@ def test_asset_names_match_config_tables(app):
     ("account_upsert_manual_position_ledger", "MANUAL_LEDGER", "upsert"),
     ("account_upsert_manual_position_ledger", "ASSET_DAILY", "rebuild_from_ledger"),
     ("market_ingest_trading_holiday", "TRADING_HOLIDAY", "upsert_holidays"),
+    ("account_ingest_dividend", "DIVIDEND_EVENT", "ingest_kr_events"),
+    ("account_ingest_dividend", "DIVIDEND_EVENT", "ingest_us_events"),
+    ("account_ingest_dividend", "DIVIDEND_RECEIPT", "ingest_receipts"),
+    ("account_ingest_dividend", "DIVIDEND_RECEIPT", "estimate_us_receipts"),
+    ("market_ingest_product_price_daily", "PRODUCT", "upsert_products"),
+    ("market_ingest_product_price_daily", "PRODUCT_PRICE", "ingest_prices"),
+    ("market_ingest_product_price_daily", "FUND_PRICE", "ingest_fund_nav"),
 ])
 def test_writer_task_declares_outlet_and_marks(dag_file, asset, task_id):
     # 쓰기 태스크마다 outlets 선언 + 이벤트 메모 첨부
