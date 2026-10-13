@@ -26,8 +26,8 @@ from asset_flow.transformers import dividend_transformer as dt_
 
 log = logging.getLogger(__name__)
 EARLIEST = "2000-01-01"                          # Param start_date 하한 (KSD 는 기간 제한 없음, 2013~ 실측)
-EVENT_KEEP = ("ex_date", "pay_date", "dps_amount", "announce_date", "product_name")
-RECEIPT_KEEP = ("gross_amount", "tax_amount", "fx_rate", "pay_date")
+EVENT_KEEP = ("ex_date", "pay_date", "per_share_dividend_amount", "announce_date", "product_name")
+RECEIPT_KEEP = ("gross_amount", "tax_amount", "exchange_rate", "pay_date")
 
 
 class PartialFailureError(RuntimeError):
@@ -188,7 +188,7 @@ def ingest_us_events(symbols: list[list[str]], win: dict, deps: Deps) -> dict:
             log.error("[US %s] 권리 조회 실패: %s", symbol, ex)
     rows = _upsert(deps, "dividend_event", records, DIVIDEND_EVENT_PK, win["base_date"], EVENT_KEEP)
     log.info("미국 일정 %s종목 → %s행 (금액 미정 %s행, 실패 %s)", len(symbols), rows,
-             sum(r["dps_amount"] is None for r in records), sorted(failed))
+             sum(r["per_share_dividend_amount"] is None for r in records), sorted(failed))
     if failed:
         raise PartialFailureError(f"미국 권리 조회 실패 {sorted(failed)} (성공분 {rows}행 적재됨)")
     return {"symbols": len(symbols), "rows": rows, "failed": []}
@@ -250,5 +250,5 @@ def estimate_us_receipts(win: dict, deps: Deps) -> int:
     records = dt_.estimate_us_receipts(events, holdings, rates, deps.app.dividend.us_withholding_rate)
     rows = _upsert(deps, "dividend_receipt", records, DIVIDEND_RECEIPT_PK, win["base_date"], RECEIPT_KEEP)
     log.info("미국 추정 원장: 일정 %s건 × 계좌 %s → %s행 (금액 미정 %s, 환율 대기 %s)", len(events), len(codes), rows,
-             sum(r["gross_amount"] is None for r in records), sum(r["fx_rate"] is None for r in records))
+             sum(r["gross_amount"] is None for r in records), sum(r["exchange_rate"] is None for r in records))
     return rows

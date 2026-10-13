@@ -135,8 +135,8 @@ class KIS:
     # ── 배당 ──
     DIVIDEND_RIGHT_TYPES: tuple[str, ...] = ("32", "03")   # CTRGA011R 32 ETF 분배금, 03 주식 현금배당 (04 등 비현금 제외)
     OVERSEAS_PRDT_TYPE: dict[str, str] = {"NASD": "512", "NYSE": "513", "AMEX": "529"}   # asset_daily.exchange_code → CTRGT011R (529 미확인)
-    US_DIVIDEND_RIGHTS: dict[str, str] = {"03": "CASH", "75": "SPECIAL"}                   # CTRGT011R RGHT_TYPE_CD → dividend_kind
-    ICE_DIVIDEND_TITLES: dict[str, str] = {"현금배당": "CASH", "특별배당": "SPECIAL"}      # HHDFS78330900 ca_title → dividend_kind
+    US_DIVIDEND_RIGHTS: dict[str, str] = {"03": "CASH", "75": "SPECIAL"}                   # CTRGT011R RGHT_TYPE_CD → dividend_type
+    ICE_DIVIDEND_TITLES: dict[str, str] = {"현금배당": "CASH", "특별배당": "SPECIAL"}      # HHDFS78330900 ca_title → dividend_type
 
     # ── 시세 ──
     PRICE_PAGE_SIZE: int = 100                # 국내·해외 일봉 1회 최대 행 (2026-10-13 실측)

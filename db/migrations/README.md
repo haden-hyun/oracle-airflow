@@ -30,3 +30,4 @@ docker compose exec -T airflow-scheduler sh -c 'psql "$AIRFLOW_CONN_POSTGRES_ASS
 |---|---|---|
 | 001_market_product | `market.product`, `market.product_price_daily` | 2026-10-14 |
 | 002_dividend | `market.dividend_event`, `account.dividend_receipt` | 2026-10-14 |
+| 003_dividend_column_names | 배당 컬럼명 표준화 (`per_share_dividend_amount`·`dividend_type`·`exchange_rate`) | 2026-10-14 |

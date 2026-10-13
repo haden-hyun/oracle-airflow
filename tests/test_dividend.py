@@ -63,8 +63,8 @@ def test_ksd_events_cash_unconfirmed_and_stock_dividend():
     assert set(recs) == {"476800", "005930"}                              # 주식배당만 있는 행 제외
     r = recs["476800"]
     assert list(r) == DIVIDEND_EVENT_COLUMNS
-    assert (r["ex_date"], r["pay_date"], r["dps_amount"], r["is_confirmed"]) == (D(2026, 9, 14), D(2026, 9, 17), 60.0, True)
-    assert recs["005930"]["dps_amount"] is None and recs["005930"]["is_confirmed"] is False
+    assert (r["ex_date"], r["pay_date"], r["per_share_dividend_amount"], r["is_confirmed"]) == (D(2026, 9, 14), D(2026, 9, 17), 60.0, True)
+    assert recs["005930"]["per_share_dividend_amount"] is None and recs["005930"]["is_confirmed"] is False
     assert recs["005930"]["dividend_label"] == "분기"
 
 
@@ -90,22 +90,22 @@ def test_us_events_outer_join():
     recs = {(r["product_code"], r["record_date"]): r for r in t.transform_us_events(OPR, ICE)}
     assert len(recs) == 3                                                  # 공개매수 제외
     paid = recs[("ORCL", D(2026, 7, 10))]
-    assert (paid["dps_amount"], paid["is_confirmed"], paid["pay_date"]) == (0.5, True, D(2026, 7, 24))
+    assert (paid["per_share_dividend_amount"], paid["is_confirmed"], paid["pay_date"]) == (0.5, True, D(2026, 7, 24))
     assert paid["source"] == "KIS_ICE+KIS_OVRS_RIGHTS" and paid["announce_date"] == D(2026, 6, 10)
     pending = recs[("ORCL", D(2026, 10, 9))]
-    assert pending["dps_amount"] is None and pending["is_confirmed"] is False and pending["ex_date"] == D(2026, 10, 9)
+    assert pending["per_share_dividend_amount"] is None and pending["is_confirmed"] is False and pending["ex_date"] == D(2026, 10, 9)
     orphan = recs[("NVDA", D(2026, 2, 6))]
     assert orphan["pay_date"] is None and orphan["ex_date"] == D(2026, 2, 6)   # T+1 이후 → 락일 = 기준일
 
 
 def test_estimate_us_receipts():
     events = [
-        {"product_code": "ORCL", "record_date": D(2026, 7, 10), "dividend_kind": "CASH", "product_name": "ORACLE",
-         "ex_date": D(2026, 7, 10), "pay_date": D(2026, 7, 24), "dps_amount": 0.5, "currency_code": "USD"},
-        {"product_code": "ORCL", "record_date": D(2026, 10, 9), "dividend_kind": "CASH", "product_name": "ORACLE",
-         "ex_date": D(2026, 10, 9), "pay_date": D(2026, 10, 23), "dps_amount": None, "currency_code": "USD"},
-        {"product_code": "AAPL", "record_date": D(2026, 8, 10), "dividend_kind": "CASH", "product_name": "APPLE",
-         "ex_date": D(2026, 8, 10), "pay_date": D(2026, 8, 13), "dps_amount": 0.27, "currency_code": "USD"},
+        {"product_code": "ORCL", "record_date": D(2026, 7, 10), "dividend_type": "CASH", "product_name": "ORACLE",
+         "ex_date": D(2026, 7, 10), "pay_date": D(2026, 7, 24), "per_share_dividend_amount": 0.5, "currency_code": "USD"},
+        {"product_code": "ORCL", "record_date": D(2026, 10, 9), "dividend_type": "CASH", "product_name": "ORACLE",
+         "ex_date": D(2026, 10, 9), "pay_date": D(2026, 10, 23), "per_share_dividend_amount": None, "currency_code": "USD"},
+        {"product_code": "AAPL", "record_date": D(2026, 8, 10), "dividend_type": "CASH", "product_name": "APPLE",
+         "ex_date": D(2026, 8, 10), "pay_date": D(2026, 8, 13), "per_share_dividend_amount": 0.27, "currency_code": "USD"},
     ]
     holdings = {("ACCT", "ORCL"): [(D(2026, 7, 9), 2.0), (D(2026, 10, 8), 2.0)],
                 ("ACCT", "AAPL"): [(D(2026, 7, 1), 1.0)]}                    # 락일 7일 전보다 오래됨 → 생략
@@ -113,9 +113,9 @@ def test_estimate_us_receipts():
     recs = {r["record_date"]: r for r in t.estimate_us_receipts(events, holdings, rates, 0.15)}
     assert set(recs) == {D(2026, 7, 10), D(2026, 10, 9)}
     july = recs[D(2026, 7, 10)]
-    assert (july["gross_amount"], july["tax_amount"], july["fx_rate"], july["right_type_code"]) == (1.0, 0.15, 1390.0, "EST03")
+    assert (july["gross_amount"], july["tax_amount"], july["exchange_rate"], july["right_type_code"]) == (1.0, 0.15, 1390.0, "EST03")
     octo = recs[D(2026, 10, 9)]
-    assert octo["gross_amount"] is None and octo["fx_rate"] is None and octo["is_estimated"] is True
+    assert octo["gross_amount"] is None and octo["exchange_rate"] is None and octo["is_estimated"] is True
 
 
 def test_dag_structure():

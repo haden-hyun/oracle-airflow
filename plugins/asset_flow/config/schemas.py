@@ -102,13 +102,13 @@ class ExchangeRateRecord(TypedDict):
 class DividendEventRecord(TypedDict):
     product_code: str
     record_date: dt.date
-    dividend_kind: str              # CASH | SPECIAL
+    dividend_type: str              # CASH | SPECIAL
     market: str                     # KR | US
     product_name: str | None
     dividend_label: str | None      # KR divi_kind(결산·분기·반기·'') / US ca_title — 원문
     ex_date: dt.date | None
     pay_date: dt.date | None
-    dps_amount: float | None        # NULL = 금액 미정 (US 금액 지연, KR 미확정 0원)
+    per_share_dividend_amount: float | None        # NULL = 금액 미정 (US 금액 지연, KR 미확정 0원)
     currency_code: str
     dividend_rate: float | None     # KR divi_rate 원문 (의미 불명, 화면 미사용)
     is_confirmed: bool
@@ -128,7 +128,7 @@ class DividendReceiptRecord(TypedDict):
     gross_amount: float | None      # 원통화 세전 (추정 행만 NULL 허용)
     tax_amount: float | None        # 원천 tax_amt 그대로 (ISA 는 미징수 참고값) / 추정 = 세전 × 15%
     currency_code: str
-    fx_rate: float | None           # 추정(USD) 행만: 지급일 이하 최신 USD 기준율
+    exchange_rate: float | None           # 추정(USD) 행만: 지급일 이하 최신 USD 기준율
     is_estimated: bool
     source: str
 
@@ -185,7 +185,7 @@ BALANCE_COLUMNS: list[str] = list(BalanceRecord.__annotations__.keys())
 EXCHANGE_RATE_COLUMNS: list[str] = list(ExchangeRateRecord.__annotations__.keys())
 DIVIDEND_EVENT_COLUMNS: list[str] = list(DividendEventRecord.__annotations__.keys())
 DIVIDEND_RECEIPT_COLUMNS: list[str] = list(DividendReceiptRecord.__annotations__.keys())
-DIVIDEND_EVENT_PK: list[str] = ["product_code", "record_date", "dividend_kind"]
+DIVIDEND_EVENT_PK: list[str] = ["product_code", "record_date", "dividend_type"]
 DIVIDEND_RECEIPT_PK: list[str] = ["account_code", "product_code", "record_date", "right_type_code"]
 PRICE_COLUMNS: list[str] = list(PriceRecord.__annotations__.keys())
 FUND_PRICE_COLUMNS: list[str] = list(FundPriceRecord.__annotations__.keys())

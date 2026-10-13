@@ -507,7 +507,7 @@ def get_us_holdings(engine: Engine, account_codes: list[str], start: str, end: s
 
 def get_usd_rates(engine: Engine, start: str) -> list[tuple[date, float]]:
     """
-    Purpose: USD 기준율 시계열 (추정 원장 fx_rate = 지급일 이하 최신값)
+    Purpose: USD 기준율 시계열 (추정 원장 exchange_rate = 지급일 이하 최신값)
     Parameter:
         - engine: 업무 DB 엔진
         - start: 시작일 (YYYY-MM-DD)
@@ -528,11 +528,11 @@ def get_us_dividend_events(engine: Engine, ex_from: str, ex_to: str) -> list[dic
         - ex_from: 락일 시작 (YYYY-MM-DD)
         - ex_to: 락일 끝 (YYYY-MM-DD, 보통 기준일 — asset_daily 가 있는 날까지)
     Input: market.dividend_event
-    Output: 레코드 dict 리스트 (ex_date·pay_date 있는 행만, dps_amount 는 float|None)
+    Output: 레코드 dict 리스트 (ex_date·pay_date 있는 행만, per_share_dividend_amount 는 float|None)
     """
     sql = text("""
-        SELECT product_code, record_date, dividend_kind, product_name, ex_date, pay_date,
-               dps_amount::float AS dps_amount, currency_code
+        SELECT product_code, record_date, dividend_type, product_name, ex_date, pay_date,
+               per_share_dividend_amount::float AS per_share_dividend_amount, currency_code
           FROM market.dividend_event
          WHERE market = 'US' AND ex_date BETWEEN :s AND :e AND pay_date IS NOT NULL
     """)

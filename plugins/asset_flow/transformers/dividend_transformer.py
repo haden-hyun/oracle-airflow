@@ -110,13 +110,13 @@ def transform_ksd_events(rows: list[dict], holidays: set[dt.date]) -> list[dict]
         out.append({
             "product_code": (r.get("sht_cd") or "").strip(),
             "record_date": record,
-            "dividend_kind": "CASH",
+            "dividend_type": "CASH",
             "market": "KR",
             "product_name": (r.get("isin_name") or "").strip() or None,      # 20자 잘림 — 표시는 asset_daily 이름
             "dividend_label": (r.get("divi_kind") or "").strip() or None,
             "ex_date": kr_ex_date(record, holidays),
             "pay_date": parse_date(r.get("divi_pay_dt")),
-            "dps_amount": dps if dps > 0 else None,
+            "per_share_dividend_amount": dps if dps > 0 else None,
             "currency_code": "KRW",
             "dividend_rate": parse_num(r.get("divi_rate")),
             "is_confirmed": dps > 0,
@@ -159,9 +159,9 @@ def transform_us_events(rights: list[dict], ice: list[dict]) -> list[dict]:
         dps = m.get("dps") or None                         # 0·빈 값 = 미정
         ex = m["ex"] or (record if record >= US_T1_SINCE else None)
         out.append({
-            "product_code": symbol, "record_date": record, "dividend_kind": kind, "market": "US",
+            "product_code": symbol, "record_date": record, "dividend_type": kind, "market": "US",
             "product_name": m.get("name"), "dividend_label": m["label"], "ex_date": ex, "pay_date": m["pay"],
-            "dps_amount": dps, "currency_code": m.get("cur", "USD"), "dividend_rate": None,
+            "per_share_dividend_amount": dps, "currency_code": m.get("cur", "USD"), "dividend_rate": None,
             "is_confirmed": bool(m.get("dfnt")) and dps is not None, "announce_date": m["anno"],
             "source": "+".join(sorted(m["src"])),
         })
@@ -195,7 +195,7 @@ def transform_receipts(rows: list[dict], account_code: str, holidays: set[dt.dat
             "gross_amount": gross,                                       # 세전 = 권리잔고 × 주당 (실측 46/46)
             "tax_amount": parse_num(r.get("tax_amt")) or 0.0,            # 원천값 그대로 (ISA = 미징수 참고값)
             "currency_code": "KRW",
-            "fx_rate": None,
+            "exchange_rate": None,
             "is_estimated": False,
             "source": "KIS_PERIOD_RIGHTS",
         })
@@ -229,7 +229,7 @@ def estimate_us_receipts(events: list[dict], holdings: dict[tuple[str, str], lis
     Input: 없음
     Output: DIVIDEND_RECEIPT_COLUMNS 레코드 (right_type_code EST03 현금 / EST75 특별, is_estimated True).
             락일 직전 7일 안에 보유 행이 없거나 수량 0 이면 생략. 금액 미정이면 gross·tax None.
-            지급일이 최신 환율일보다 뒤면 fx_rate None (다음 run 이 채움)
+            지급일이 최신 환율일보다 뒤면 exchange_rate None (다음 run 이 채움)
     """
     out, fx_max = [], usd_rates[-1][0] if usd_rates else None
     for e in events:
@@ -241,15 +241,15 @@ def estimate_us_receipts(events: list[dict], holdings: dict[tuple[str, str], lis
             last = _last_before(series, e["ex_date"], inclusive=False)
             if last is None or (e["ex_date"] - last[0]).days > HOLDING_LOOKBACK_DAYS or last[1] <= 0:
                 continue
-            gross = round(last[1] * e["dps_amount"], 6) if e["dps_amount"] is not None else None
+            gross = round(last[1] * e["per_share_dividend_amount"], 6) if e["per_share_dividend_amount"] is not None else None
             rate = _last_before(usd_rates, e["pay_date"], inclusive=True) if fx_max and e["pay_date"] <= fx_max else None
             out.append({
                 "account_code": account_code, "product_code": code, "record_date": e["record_date"],
-                "right_type_code": "EST75" if e["dividend_kind"] == "SPECIAL" else "EST03",
+                "right_type_code": "EST75" if e["dividend_type"] == "SPECIAL" else "EST03",
                 "product_name": e.get("product_name"), "ex_date": e["ex_date"], "pay_date": e["pay_date"],
                 "holding_quantity": last[1], "gross_amount": gross,
                 "tax_amount": round(gross * withholding_rate, 6) if gross is not None else None,
-                "currency_code": e["currency_code"], "fx_rate": rate[1] if rate else None,
+                "currency_code": e["currency_code"], "exchange_rate": rate[1] if rate else None,
                 "is_estimated": True, "source": "EST_US_DPS_X_QTY",
             })
     return [{c: r[c] for c in DIVIDEND_RECEIPT_COLUMNS} for r in out]
