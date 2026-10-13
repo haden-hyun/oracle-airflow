@@ -2,7 +2,7 @@
 업무 DB(postgres_asset) 접근 헬퍼
 
 - asset_engine(): Connection postgres_asset 엔진 (태스크 안에서만 호출)
-- 조회: get_fund_price / get_latest_fund_price / get_market_data_gaps / get_asset_date_bounds / get_ledger_dates / get_manual_positions / get_account_master / get_previous_ledger_amount / get_trading_holidays
+- 조회: get_fund_price / get_latest_fund_price / get_fund_names / get_market_data_gaps / get_asset_date_bounds / get_ledger_dates / get_manual_positions / get_account_master / get_previous_ledger_amount / get_trading_holidays
 - 쓰기: delete_and_insert_account_assets / replace_daily_rows / upsert_ledger / replace_trading_holidays / call_procedure
 - 공통 조회(시세·배당): has_asset_rows / get_holiday_sets / table_has_rows
 - 배당: get_dividend_targets / get_us_holdings / get_usd_rates / get_us_dividend_events / upsert_rows(쓰기)
@@ -259,6 +259,21 @@ def delete_and_insert_account_assets(
         if records:
             _append(conn, schema, table_name, records)
     return len(records)
+
+
+def get_fund_names(engine: Engine, codes: list[str]) -> dict[str, str]:
+    """
+    Purpose: 펀드 표시명 (fund_price_daily 최신 행의 이름 — KOFIA 응답엔 이름 없음)
+    Parameter:
+        - engine: 업무 DB 엔진
+        - codes: 펀드 표준코드
+    Input: market.fund_price_daily
+    Output: {코드: 이름} (이력 없는 코드는 빠짐)
+    """
+    sql = text("SELECT DISTINCT ON (product_code) product_code, product_name FROM market.fund_price_daily "
+               "WHERE product_code = ANY(:c) AND product_name IS NOT NULL ORDER BY product_code, standard_date DESC")
+    with engine.connect() as conn:
+        return {r.product_code: r.product_name for r in conn.execute(sql, {"c": list(codes)})}
 
 
 def replace_daily_rows(engine: Engine, schema: str, table_name: str, standard_date: str, records: list,

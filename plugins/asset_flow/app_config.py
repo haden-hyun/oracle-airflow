@@ -40,7 +40,9 @@ class Tables(_Strict):
 
 class Funds(_Strict):
     pension_fund_code: str                      # kind=kis_pension_fund 기본 펀드
-    crawl_codes: list[str]                      # 항상 크롤링할 펀드
+    crawl_codes: list[str]                      # 항상 수집할 펀드
+    crawler_fallback: bool = True               # KOFIA 누락 코드만 fundguide 크롤링
+    shadow_compare: bool = False                # KOFIA 값 ↔ 크롤러 값 매일 대조 (전환 검증)
 
 
 class ManualAssetType(_Strict):

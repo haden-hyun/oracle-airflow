@@ -11,7 +11,9 @@ tables:
 
 funds:
   pension_fund_code: K553W5E17401            # kind=kis_pension_fund 기본값 (계좌별 fund_code 로 override)
-  crawl_codes: [K553W5E17401, K55105D43299]  # 항상 크롤링 (계좌·유형 펀드는 런타임에 합집합)
+  crawl_codes: [K553W5E17401, K55105D43299]  # 항상 수집 (계좌·유형 펀드는 런타임에 합집합)
+  crawler_fallback: true                     # KOFIA 에 없는 코드만 fundguide 크롤링 (크롤러 제거 전까지)
+  shadow_compare: true                       # 전환 검증: 매일 크롤러 값과 대조, 다르면 실패 알림
 
 manual_asset_types:                          # 키 = account_master.account_type
   IRP:                  {product_code: K55105D43299, multiplier: 0.001}
@@ -33,7 +35,7 @@ price_ingest:                                # market_ingest_product_price_daily
   refetch_trading_days: 5                    # 매일 최근 n 거래일 재수집 (정정·누락)
   tracked_after_sale_days: 30                # 매도 후 n 일까지 is_tracked
   request_interval_sec: 0.35                 # 업비트·KOFIA 호출 간격 (KIS 는 KIS.REQUEST_INTERVAL)
-  fund_nav_enabled: false                    # KOFIA 펀드 기준가 보충 — 이용 조건 확인·TDF2055 정정 후 true
+  fund_nav_enabled: true                     # KOFIA 펀드 기준가 과거 빈 날짜 보충 (DO NOTHING)
 
 dividend:                                    # account_ingest_dividend (매일 07:20)
   windows:                                   # 기준 = run 의 KST 날짜(T), 단위 일
