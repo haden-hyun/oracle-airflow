@@ -177,13 +177,15 @@ airflow/
 
 | kind | 수집 |
 |---|---|
-| `kis_stock` | 위탁: 해외·국내 주식 + RP/발행어음 1행 (`CASH`/`RP_NOTE`), 예수금·외화 제외 |
-| `kis_domestic_stock` | ISA 국내 주식 |
-| `kis_pension_fund` | 연금저축: 펀드(평가금액 ÷ NAV) + 국내 주식 |
+| `kis_stock` | 위탁: 해외·국내 주식 + RP/발행어음 1행 (`CASH`/`RP_NOTE`) + 예수금 `DEPOSIT`(D+2 정산) · `DEPOSIT_USD` |
+| `kis_domestic_stock` | ISA 국내 주식 + 예수금 `DEPOSIT` |
+| `kis_pension_fund` | 연금저축: 펀드(평가금액 ÷ NAV) + 국내 주식 + 예수금 `DEPOSIT` |
 | `kis_cma_cash` | CMA 현금 (ISA 키 공유) |
-| `upbit` | 코인 잔고 × T-1 종가 |
+| `upbit` | 코인 잔고 × T-1 종가 + 원화 예수금 `DEPOSIT`(balance + locked) |
 | `manual_fund` | IRP·DC: 원장 좌수 × NAV × multiplier |
 | `manual_cash` | 적금·청약: 원장 원금 이월 |
+
+- 예수금: 0원이면 행 없음 (대시보드가 0원 처리). 전날 종목이 있었는데 오늘 예수금만 오면 빈 응답으로 보고 실패 — 실제 전량 매도면 Param `allow_cash_only`
 
 ## 수기 원장 입력 (`account_upsert_manual_position_ledger`)
 

@@ -5,6 +5,8 @@ KIS API 원시 응답 → 도메인 DataFrame 변환 (순수 함수)
 - transform_pension_fund_balance: 연금저축 펀드 (평가금액 → 좌수 역산, 미보유 시 빈 DF)
 - transform_cma_cash_balance: CMA 현금 (CTRP6548R output1[14])
 - transform_rp_note_balance: 위탁 RP/발행어음 (CTRP6548R "RP/발행어음" 행, 행 수·합계 검증)
+- transform_deposit / transform_foreign_deposit: 예수금 (원화 D+2 정산 · 통화별 외화, 0원이면 행 없음)
+- account_total_gap: 적재 행 합계 ↔ CTRP6548R 계좌 총자산 대조 (경고 문구만)
 - transform_exchange_rate: 환율 + GBP·EUR 원화 교차 환산
 """
 
@@ -192,3 +194,90 @@ def transform_exchange_rate(raw_list: list, standard_date: str) -> pd.DataFrame:
     result = pd.concat([df[~cross_mask], cross], ignore_index=True)
     result["currency_code"] = result["currency_pair_name"].map(_CURRENCY_CODE_MAP)
     return result[EXCHANGE_RATE_COLUMNS]
+
+
+# ── 예수금 (asset_type=CASH, product_code=DEPOSIT[_통화]) ──
+def cash_row(standard_date: str, account: dict, code: str, name: str, currency: str, exchange: str | None,
+             amount: float) -> pd.DataFrame:
+    """
+    Purpose: 현금성 1행 공통 (수량 1, 단가 = 금액, 매입 = 평가)
+    Parameter:
+        - standard_date: 기준일
+        - account: {"account_code", "account_name"}
+        - code: 상품 코드 (DEPOSIT 등)
+        - name: 표시명
+        - currency: 통화
+        - exchange: 거래소 코드 (없으면 None)
+        - amount: 금액 (통화 단위)
+    Input: 없음
+    Output: BALANCE_COLUMNS 1행
+    """
+    df = pd.DataFrame([{
+        "standard_date": standard_date, **account, "product_code": code, "product_name": name,
+        "asset_type": "CASH", "currency_code": currency, "exchange_code": exchange, "multiplier": 1.0,
+        "holding_quantity": 1.0, "unit_purchase_price": amount, "unit_market_price": amount,
+        "total_purchase_amount": amount, "total_evaluation_amount": amount, "total_profit_amount": 0.0,
+        "valuation_profit_rate": 0.0,
+    }])
+    return normalize_numeric(df)[BALANCE_COLUMNS]
+
+
+def transform_deposit(raw_domestic: dict, standard_date: str, config: dict) -> pd.DataFrame:
+    """
+    Purpose: 원화 예수금 (TTTC8434R output2[0].prvs_rcdl_excc_amt = D+2 정산 후 — 미결제 매수와 이중 계산 방지)
+    Parameter:
+        - raw_domestic: get_domestic_balance() 원시 JSON
+        - standard_date: 기준일
+        - config: 계좌 설정 dict
+    Input: 없음
+    Output: DEPOSIT 1행, 0원이면 빈 DataFrame. output2 예수금 필드가 없으면 ValueError
+    """
+    o2 = (raw_domestic.get("output2") or [None])[0]
+    if not o2 or "prvs_rcdl_excc_amt" not in o2:
+        raise ValueError("TTTC8434R output2 예수금 필드 없음 — 응답 형식 변경 의심")
+    amount = float(str(o2["prvs_rcdl_excc_amt"] or 0).replace(",", ""))
+    if amount == 0:                                       # 0원은 행 없음 (대시보드가 0원으로 처리)
+        return pd.DataFrame(columns=BALANCE_COLUMNS)
+    return cash_row(standard_date, _account(config), "DEPOSIT", "예수금", "KRW", "KRX", amount)
+
+
+def transform_foreign_deposit(raw: dict, standard_date: str, config: dict) -> pd.DataFrame:
+    """
+    Purpose: 외화 예수금 통화별 (CTRP6504R output2[].frcr_dncl_amt_2)
+    Parameter:
+        - raw: get_overseas_present_balance() 원시 JSON
+        - standard_date: 기준일
+        - config: 계좌 설정 dict
+    Input: 없음
+    Output: DEPOSIT_<통화> 행 (0인 통화는 제외, 모두 0이면 빈 DataFrame)
+    """
+    amounts = {r["crcy_cd"].strip(): float(str(r.get("frcr_dncl_amt_2") or 0).replace(",", ""))
+               for r in raw.get("output2") or [] if (r.get("crcy_cd") or "").strip()}
+    rows = [cash_row(standard_date, _account(config), f"DEPOSIT_{c}", f"외화예수금({c})", c, None, a)
+            for c, a in sorted(amounts.items()) if a != 0]
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=BALANCE_COLUMNS)
+
+
+def account_total_gap(rows: pd.DataFrame, raw_account_balance: dict, usd_rate: float | None,
+                      tolerance: float = 0.003) -> str | None:
+    """
+    Purpose: 적재 행 합계(원화 환산)와 CTRP6548R output2.tot_asst_amt 대조 (적재는 막지 않음)
+    Parameter:
+        - rows: 이 계좌의 BALANCE_COLUMNS 행
+        - raw_account_balance: get_account_balance() 원시 JSON
+        - usd_rate: 기준일 USD 기준율 (USD 행 환산, 없으면 비교 생략)
+        - tolerance: 허용 비율 (기본 0.3%)
+    Input: 없음
+    Output: 차이가 허용 비율을 넘으면 경고 문구, 아니면 None (총자산 없음·USD 환율 없음도 None)
+    """
+    o2 = raw_account_balance.get("output2")
+    o2 = o2[0] if isinstance(o2, list) and o2 else o2
+    total = float(str((o2 or {}).get("tot_asst_amt") or 0).replace(",", ""))
+    if total <= 0 or rows.empty:
+        return None
+    usd = rows["currency_code"] == "USD"
+    if usd.any() and not usd_rate:
+        return None
+    loaded = float(rows.loc[~usd, "total_evaluation_amount"].sum() + rows.loc[usd, "total_evaluation_amount"].sum() * (usd_rate or 0))
+    gap = loaded / total - 1
+    return f"적재 합계 {loaded:,.0f} vs 계좌 총자산 {total:,.0f} ({gap:+.2%})" if abs(gap) > tolerance else None

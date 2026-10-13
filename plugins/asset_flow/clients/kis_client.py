@@ -3,7 +3,8 @@
 
 - 토큰은 호출부가 주입 (token_for 또는 existing_token)
 - config 는 secrets_config.kis_client_config 로 만든 dict
-- 제공: get_overseas_balance / get_domestic_balance / get_account_balance / get_exchange_rate (원시 JSON 반환)
+- 제공: get_overseas_balance / get_domestic_balance / get_account_balance / get_overseas_present_balance /
+        get_exchange_rate (원시 JSON 반환, 잔고는 rt_cd 검사)
 - 공통: _request(단건, rt_cd 검사·간격 유지) / _get_pages(tr_cont 연속조회) — 배당·시세 전용 (잔고·환율은 safe_request 직접)
 - 배당: get_ksd_dividend / get_period_rights / get_overseas_period_rights / get_overseas_rights_ice (원시 행)
 - 시세: get_domestic_daily_price / get_overseas_daily_price (원주가, 100행씩 날짜를 당겨 반복)
@@ -163,23 +164,49 @@ class KISApiClient(BaseApiClient):
         url = self._build_url(KIS.PATHS[name])
         return self.safe_request("GET", url, headers=self._build_headers(KIS.TR_IDS[name]), params=params).json()
 
+    def _get_account_checked(self, name: str) -> dict:
+        """
+        Purpose: 계좌 조회 + rt_cd 검사 (일시 오류는 재시도)
+        Parameter:
+            - name: KIS.PATHS/TR_IDS/PARAMS 키
+        Input: KIS API
+        Output: 원시 JSON. KIS.BALANCE_RETRIES 번 모두 rt_cd != "0" 이면 KisApiError
+                (빈 잔고로 오인해 기존 적재분을 지우지 않게)
+        """
+        for attempt in range(KIS.BALANCE_RETRIES):
+            data = self._get_account(name)
+            if data.get("rt_cd") == "0":
+                return data
+            if attempt + 1 < KIS.BALANCE_RETRIES:
+                time.sleep(KIS.REQUEST_INTERVAL * 3)
+        raise KisApiError(KIS.TR_IDS[name], data.get("msg_cd"), data.get("msg1"))
+
     def get_overseas_balance(self) -> dict:
         """
         Purpose: 해외주식 잔고 조회 (TTTS3012R)
         Parameter: 없음
         Input: KIS API
-        Output: 원시 JSON (output1 = 종목별 잔고)
+        Output: 원시 JSON (output1 = 종목별 잔고). rt_cd 오류면 재시도 후 KisApiError
         """
-        return self._get_account("overseas_balance")
+        return self._get_account_checked("overseas_balance")
 
     def get_domestic_balance(self) -> dict:
         """
         Purpose: 국내주식 잔고 조회 (TTTC8434R)
         Parameter: 없음
         Input: KIS API
-        Output: 원시 JSON (output1 = 종목별 잔고)
+        Output: 원시 JSON (output1 = 종목별 잔고, output2[0] = 예수금·합계). rt_cd 오류면 재시도 후 KisApiError
         """
-        return self._get_account("domestic_balance")
+        return self._get_account_checked("domestic_balance")
+
+    def get_overseas_present_balance(self) -> dict:
+        """
+        Purpose: 해외주식 체결기준현재잔고 (CTRP6504R) — 통화별 외화 예수금
+        Parameter: 없음
+        Input: KIS API
+        Output: 원시 JSON (output2 = 통화별 행). rt_cd 오류면 재시도 후 KisApiError
+        """
+        return self._get_account_checked("overseas_present_balance")
 
     def get_account_balance(self) -> dict:
         """

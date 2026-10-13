@@ -9,7 +9,8 @@ DATES = {"standard_date": "2026-10-11", "base_date": "2026-10-12"}
 
 DOMESTIC = {"output1": [{"pdno": "005930", "prdt_name": "삼성전자", "evlu_pfls_amt": "1,000", "evlu_pfls_rt": "10",
                          "pchs_avg_pric": "50000", "hldg_qty": "2", "pchs_amt": "100000", "evlu_amt": "101000",
-                         "prpr": "50500"}]}
+                         "prpr": "50500"}],
+            "output2": [{"prvs_rcdl_excc_amt": "3032", "dnca_tot_amt": "3032"}]}
 OVERSEAS = {"output1": [{"ovrs_pdno": "AAPL", "ovrs_item_name": "애플", "frcr_evlu_pfls_amt": "5", "evlu_pfls_rt": "2",
                          "pchs_avg_pric": "200", "ovrs_cblc_qty": "1", "frcr_pchs_amt1": "200",
                          "ovrs_stck_evlu_amt": "205", "now_pric2": "205", "tr_crcy_cd": "USD", "ovrs_excg_cd": "NASD"}]}
@@ -71,6 +72,15 @@ class FakeKIS:
         Output: dict
         """
         return _balance()
+
+    def get_overseas_present_balance(self):
+        """
+        Purpose: 해외 체결기준현재잔고 응답 (통화별 외화 예수금)
+        Parameter: 없음
+        Input: 없음
+        Output: dict
+        """
+        return {"rt_cd": "0", "output2": [{"crcy_cd": "USD", "frcr_dncl_amt_2": "1.65"}]}
 
 
 class FakeUpbit:
@@ -187,7 +197,9 @@ def _run(kind_id, deps):
 
 def test_kis_stock_overseas_plus_domestic(deps):
     df = _run("KIS_STOCK", deps)
-    assert list(df["product_code"]) == ["AAPL", "005930", "RP_NOTE"]
+    assert list(df["product_code"]) == ["AAPL", "005930", "RP_NOTE", "DEPOSIT", "DEPOSIT_USD"]
+    dep = df.set_index("product_code")
+    assert (dep.loc["DEPOSIT", "total_evaluation_amount"], dep.loc["DEPOSIT_USD", "currency_code"]) == (3032.0, "USD")
     assert set(df["account_code"]) == {"00000000-01"} and set(df["account_name"]) == {"위탁"}
     assert df.loc[1, "total_profit_amount"] == 1000.0                   # 쉼표 정규화
 
@@ -197,7 +209,7 @@ def test_pension_fund_back_calculates_units(deps):
     fund = df[df["asset_type"] == "FUND"].iloc[0]
     assert fund["product_code"] == "K553W5E17401" and fund["product_name"] == "펀드-K553W5E17401"
     assert fund["holding_quantity"] == 1_500_000 / 1000.0 / 0.001
-    assert len(df) == 2
+    assert len(df) == 3 and df.iloc[-1]["product_code"] == "DEPOSIT"
 
 
 def test_cma_and_upbit(deps):
@@ -205,7 +217,8 @@ def test_cma_and_upbit(deps):
     assert (cma["product_code"], cma["account_code"]) == ("CMA", "00000004-00")
     assert cma["total_evaluation_amount"] == 300000.0
     up = _run("UPBIT", deps)
-    assert list(up["product_code"]) == ["BTC"] and up.iloc[0]["account_code"] == "UPBIT"
+    assert list(up["product_code"]) == ["BTC", "DEPOSIT"] and up.iloc[0]["account_code"] == "UPBIT"
+    assert (up.iloc[1]["total_evaluation_amount"], up.iloc[1]["exchange_code"]) == (10.0, "UPBIT")
     assert up.iloc[0]["total_evaluation_amount"] == 0.5 * 120000000 and up.iloc[0]["account_name"] == "가상자산"
 
 
@@ -249,7 +262,7 @@ def test_collect_account_writes_scoped(deps, monkeypatch):
         return len(records)
 
     monkeypatch.setattr(dp.db, "delete_and_insert_account_assets", fake_write)
-    assert dp.collect_account("KIS_ISA", DATES, deps) == 1
+    assert dp.collect_account("KIS_ISA", DATES, deps) == 2                 # 주식 + 예수금
     assert writes == [("account", "asset_daily", "2026-10-11", "00000001-00")]
 
 

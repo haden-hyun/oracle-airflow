@@ -24,7 +24,7 @@ from asset_flow.secrets_config import Account, SecretsConfig, kis_client_config,
 from asset_flow.tokens import TokenManager
 from asset_flow.transformers import kis_transformer as kt
 from asset_flow.transformers.ledger_transformer import transform_cash_position, transform_fund_position
-from asset_flow.transformers.upbit_transformer import transform_upbit_balance
+from asset_flow.transformers.upbit_transformer import transform_upbit_balance, transform_upbit_deposit
 
 log = logging.getLogger(__name__)
 
@@ -139,27 +139,51 @@ def _kis(acct: Account, deps: Deps) -> tuple[KISApiClient, dict]:
     return KISApiClient(deps.tokens.token_for(acct.credential), conf), conf
 
 
+def _log_total_gap(acct: Account, df: pd.DataFrame, raw_account_balance: dict, standard_date: str, deps: Deps) -> None:
+    """
+    Purpose: 적재 합계 ↔ 계좌 총자산 대조 경고 (로그만, 적재는 계속)
+    Parameter:
+        - acct: 계좌
+        - df: 이 계좌 적재 행
+        - raw_account_balance: CTRP6548R 원시 JSON
+        - standard_date: 기준일
+        - deps: 의존성
+    Input: market.exchange_rate_daily (USD)
+    Output: 없음 (차이 크면 WARNING 로그, 조회 실패도 로그만)
+    """
+    try:
+        rates = [r for d, r in db.get_usd_rates(deps.engine, standard_date) if str(d) <= standard_date]
+        if msg := kt.account_total_gap(df, raw_account_balance, rates[-1] if rates else None):
+            log.warning("[%s] 계좌 총자산 대조: %s", acct.id, msg)
+    except Exception as e:                                # noqa: BLE001 — 검증은 적재를 막지 않음
+        log.warning("[%s] 계좌 총자산 대조 생략: %s", acct.id, type(e).__name__)
+
+
 def _kis_stock(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
     """
-    Purpose: 위탁계좌 해외·국내 주식 + RP/발행어음 (같은 계좌라 한 writer)
+    Purpose: 위탁계좌 해외·국내 주식 + RP/발행어음 + 원화·외화 예수금 (같은 계좌라 한 writer)
     Parameter:
         - acct: 계좌
         - dates: {standard_date, base_date}
         - deps: 의존성
-    Input: KIS API (해외잔고·국내잔고·투자계좌자산현황)
-    Output: BALANCE_COLUMNS DataFrame (셋 다 0건일 때만 빈 DF → 수집 실패)
+    Input: KIS API (해외잔고·국내잔고·투자계좌자산현황·해외 체결기준현재잔고)
+    Output: BALANCE_COLUMNS DataFrame (전부 0건일 때만 빈 DF → 수집 실패)
     """
     kis, conf = _kis(acct, deps)
     d = dates["standard_date"]
-    # 예수금·외화 미적재
-    return _concat(kt.transform_overseas_balance(kis.get_overseas_balance(), d, conf),
-                   kt.transform_domestic_balance(kis.get_domestic_balance(), d, conf),
-                   kt.transform_rp_note_balance(kis.get_account_balance(), d, conf))
+    dom, acc = kis.get_domestic_balance(), kis.get_account_balance()      # 국내 잔고는 주식·예수금 공용 (1회)
+    df = _concat(kt.transform_overseas_balance(kis.get_overseas_balance(), d, conf),
+                 kt.transform_domestic_balance(dom, d, conf),
+                 kt.transform_rp_note_balance(acc, d, conf),
+                 kt.transform_deposit(dom, d, conf),
+                 kt.transform_foreign_deposit(kis.get_overseas_present_balance(), d, conf))
+    _log_total_gap(acct, df, acc, d, deps)
+    return df
 
 
 def _kis_domestic_stock(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
     """
-    Purpose: 국내 주식 잔고 (ISA 등)
+    Purpose: 국내 주식 잔고 + 원화 예수금 (ISA 등)
     Parameter:
         - acct: 계좌
         - dates: {standard_date, base_date}
@@ -168,12 +192,13 @@ def _kis_domestic_stock(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
     Output: BALANCE_COLUMNS DataFrame
     """
     kis, conf = _kis(acct, deps)
-    return kt.transform_domestic_balance(kis.get_domestic_balance(), dates["standard_date"], conf)
+    dom, d = kis.get_domestic_balance(), dates["standard_date"]
+    return _concat(kt.transform_domestic_balance(dom, d, conf), kt.transform_deposit(dom, d, conf))
 
 
 def _kis_pension_fund(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
     """
-    Purpose: 연금저축 펀드(좌수 역산) + 국내 주식
+    Purpose: 연금저축 펀드(좌수 역산) + 국내 주식 + 원화 예수금
     Parameter:
         - acct: 계좌
         - dates: {standard_date, base_date}
@@ -184,8 +209,11 @@ def _kis_pension_fund(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
     kis, conf = _kis(acct, deps)
     d, code = dates["standard_date"], fund_code_for(acct, deps.app)
     price, name = db.get_fund_price(deps.engine, code, d)
-    fund = kt.transform_pension_fund_balance(kis.get_account_balance(), d, conf, code, price, name)
-    return _concat(fund, kt.transform_domestic_balance(kis.get_domestic_balance(), d, conf))
+    acc, dom = kis.get_account_balance(), kis.get_domestic_balance()
+    df = _concat(kt.transform_pension_fund_balance(acc, d, conf, code, price, name),
+                 kt.transform_domestic_balance(dom, d, conf), kt.transform_deposit(dom, d, conf))
+    _log_total_gap(acct, df, acc, d, deps)
+    return df
 
 
 def _kis_cma_cash(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
@@ -204,7 +232,7 @@ def _kis_cma_cash(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
 
 def _upbit(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
     """
-    Purpose: Upbit 코인 잔고 × T-1 종가
+    Purpose: Upbit 코인 잔고 × T-1 종가 + 원화 예수금
     Parameter:
         - acct: 계좌
         - dates: {standard_date, base_date}
@@ -217,8 +245,10 @@ def _upbit(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
     balance = upbit.get_balance()
     markets = [f"KRW-{b['currency']}" for b in balance if b["currency"] != "KRW"]
     prices = upbit.get_daily_candles(markets, to_date=dates["base_date"]) if markets else []
-    return transform_upbit_balance(balance, upbit.get_market_codes(), prices, dates["standard_date"],
-                                   acct.account_code, acct.display_name)
+    coins = transform_upbit_balance(balance, upbit.get_market_codes(), prices, dates["standard_date"],
+                                    acct.account_code, acct.display_name)
+    return _concat(coins, transform_upbit_deposit(balance, dates["standard_date"], acct.account_code,
+                                                  acct.display_name))
 
 
 def _ledger_row(acct: Account, standard_date: str, deps: Deps) -> dict | None:
@@ -296,15 +326,17 @@ def write_account(acct: Account, standard_date: str, df: pd.DataFrame, deps: Dep
     )
 
 
-def collect_account(account_id: str, dates: dict, deps: Deps) -> int:
+def collect_account(account_id: str, dates: dict, deps: Deps, allow_cash_only: bool = False) -> int:
     """
     Purpose: 계좌 1개 수집·적재 (get+upload 통합 — 빈 결과로 기존 적재분을 지우지 않음)
     Parameter:
         - account_id: secrets 계좌 id
         - dates: {standard_date, base_date}
         - deps: 의존성
+        - allow_cash_only: True 면 '예수금만 남음'을 허용 (실제 전량 매도 확인 후 수동 재실행용)
     Input: kind 별 외부 API·업무 DB
-    Output: 적재 행 수. 비활성 계좌·쓰기 가드 위반이면 API 호출 전에, 0건이면 DELETE 전에 예외
+    Output: 적재 행 수. 비활성 계좌·쓰기 가드 위반이면 API 호출 전에, 0건이거나
+            전날 보유 종목이 오늘 0건(예수금만)이면 DELETE 전에 예외
     """
     acct = deps.secrets.account(account_id)
     if not acct.enabled:
@@ -313,6 +345,11 @@ def collect_account(account_id: str, dates: dict, deps: Deps) -> int:
     df = HANDLERS[acct.kind](acct, dates, deps)
     if df.empty:
         raise EmptyResultError(f"[{account_id}] 데이터 없음 — 빈 응답 (기존 적재분 보존)")
+    holdings = df[~df["product_code"].astype(str).str.startswith("DEPOSIT")]
+    if holdings.empty and not allow_cash_only and db.had_holdings_before(deps.engine, acct.account_code,
+                                                                        dates["standard_date"]):
+        raise EmptyResultError(f"[{account_id}] 종목 0건(예수금만) — 전날까지 보유, 빈 응답 의심 (기존 적재분 보존). "
+                               f"실제 전량 매도면 Param allow_cash_only 에 계좌 id 를 넣고 재실행")
     rows = write_account(acct, dates["standard_date"], df, deps)
     log.info("[%s] %s 적재 %s건", account_id, dates["standard_date"], rows)
     return rows

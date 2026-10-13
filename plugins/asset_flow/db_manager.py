@@ -2,7 +2,7 @@
 업무 DB(postgres_asset) 접근 헬퍼
 
 - asset_engine(): Connection postgres_asset 엔진 (태스크 안에서만 호출)
-- 조회: get_fund_price / get_latest_fund_price / get_fund_names / get_market_data_gaps / get_asset_date_bounds / get_ledger_dates / get_manual_positions / get_account_master / get_previous_ledger_amount / get_trading_holidays
+- 조회: get_fund_price / get_latest_fund_price / get_fund_names / had_holdings_before / get_market_data_gaps / get_asset_date_bounds / get_ledger_dates / get_manual_positions / get_account_master / get_previous_ledger_amount / get_trading_holidays
 - 쓰기: delete_and_insert_account_assets / replace_daily_rows / upsert_ledger / replace_trading_holidays / call_procedure
 - 공통 조회(시세·배당): has_asset_rows / get_holiday_sets / table_has_rows
 - 배당: get_dividend_targets / get_us_holdings / get_usd_rates / get_us_dividend_events / upsert_rows(쓰기)
@@ -274,6 +274,26 @@ def get_fund_names(engine: Engine, codes: list[str]) -> dict[str, str]:
                "WHERE product_code = ANY(:c) AND product_name IS NOT NULL ORDER BY product_code, standard_date DESC")
     with engine.connect() as conn:
         return {r.product_code: r.product_name for r in conn.execute(sql, {"c": list(codes)})}
+
+
+def had_holdings_before(engine: Engine, account_code: str, standard_date: str) -> bool:
+    """
+    Purpose: 직전 적재일에 예수금 외 보유 행이 있었는지 (예수금만 남은 응답 = 빈 응답 의심 판정)
+    Parameter:
+        - engine: 업무 DB 엔진
+        - account_code: 계좌 코드
+        - standard_date: 기준일 (이 날 이전 마지막 적재일을 봄)
+    Input: account.asset_daily
+    Output: 있으면 True (이전 적재 없음이면 False)
+    """
+    sql = text("""
+        SELECT EXISTS (SELECT 1 FROM account.asset_daily
+                        WHERE account_code = :a AND product_code NOT LIKE 'DEPOSIT%'
+                          AND standard_date = (SELECT max(standard_date) FROM account.asset_daily
+                                                WHERE account_code = :a AND standard_date < :d))
+    """)
+    with engine.connect() as conn:
+        return conn.execute(sql, {"a": account_code, "d": standard_date}).scalar()
 
 
 def replace_daily_rows(engine: Engine, schema: str, table_name: str, standard_date: str, records: list,

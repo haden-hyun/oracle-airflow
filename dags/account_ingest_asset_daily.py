@@ -8,7 +8,7 @@
 
 from datetime import datetime, timedelta
 
-from airflow.sdk import dag, get_current_context, task
+from airflow.sdk import Param, dag, get_current_context, task
 
 from alerts import discord_failure_callback, discord_recovery_callback
 from asset_flow.assets import ASSET_DAILY, mark
@@ -24,7 +24,7 @@ secrets 의 활성 계좌별 T-1 잔고·평가금액을 `account.asset_daily` �
 | `get_standard_date` | standard_date(T-1, 적재 레이블) / base_date(T, Upbit 캔들 경계) |
 | `wait_for_exchange_rate` / `wait_for_fund_price_daily` | 기준일 환율 4종·필요 펀드 기준가가 DB 에 생길 때까지 대기 (30초 간격, 최대 10분) |
 | `list_accounts` | secrets 활성 계좌 **id** 목록 (XCom 에 계좌번호 없음) |
-| `collect_account` (매핑, 이름=계좌 id) | kind 별 수집 → 0건이면 실패 → 계좌·기준일 스코프 DELETE+INSERT |
+| `collect_account` (매핑, 이름=계좌 id) | kind 별 수집(종목 + 예수금) → 0건 · 전날 보유 종목이 0건이면 실패 → 계좌·기준일 스코프 DELETE+INSERT |
 | `refresh_dashboard_views` | 앞 결과와 무관하게 대시보드 MV 갱신 프로시저 CALL (일부 계좌 실패여도 나머지 반영) |
 | `fail_if_upstream_failed` | 앞 단계 실패가 있으면 run 실패 처리 (알림은 실패 태스크가 이미 보냄) |
 
@@ -47,6 +47,8 @@ secrets 의 활성 계좌별 T-1 잔고·평가금액을 `account.asset_daily` �
                   "on_failure_callback": discord_failure_callback},
     on_success_callback=discord_recovery_callback,
     tags=["account", "asset", "portfolio", "KIS", "Upbit", "daily", "ingestion"],
+    params={"allow_cash_only": Param([], type="array", items={"type": "string"},
+                                     description="전량 매도로 예수금만 남은 계좌 id (빈 응답 판정 예외, 확인 후 수동 재실행)")},
 )
 def account_ingest_asset_daily():
     """
@@ -148,8 +150,9 @@ def account_ingest_asset_daily():
         """
         from asset_flow.pipeline.dispatch import Deps, collect_account as run
 
-        get_current_context()["account_id"] = account_id     # map_index_template 표시명
-        rows = run(account_id, dates, Deps.load())
+        ctx = get_current_context()
+        ctx["account_id"] = account_id                        # map_index_template 표시명
+        rows = run(account_id, dates, Deps.load(), allow_cash_only=account_id in ctx["params"]["allow_cash_only"])
         mark(ASSET_DAILY, standard_date=dates["standard_date"], account_id=account_id, rows=rows)
         return {"account_id": account_id, "rows": rows}
 

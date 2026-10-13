@@ -24,6 +24,8 @@ class KIS:
         "domestic_balance": "/uapi/domestic-stock/v1/trading/inquire-balance",
         # API명: 해외주식 잔고조회[v1_해외주식-006] → 해외주식 잔고 조회용
         "overseas_balance": "/uapi/overseas-stock/v1/trading/inquire-balance",
+        # API명: 해외주식 체결기준현재잔고[v1_해외주식-008] → 통화별 외화 예수금 (위탁)
+        "overseas_present_balance": "/uapi/overseas-stock/v1/trading/inquire-present-balance",
         # API명: 예탁원정보(배당일정)[국내주식-145] → 종목별 주당분배금·지급일 (계좌 불필요)
         "ksd_dividend": "/uapi/domestic-stock/v1/ksdinfo/dividend",
         # API명: 기간별계좌권리현황조회[국내주식-211] → 계좌 분배금·배당 원장 (세전·세금·지급일)
@@ -43,6 +45,7 @@ class KIS:
         "domestic_balance": "TTTC8434R",
         "overseas_balance": "TTTS3012R",
         "account_balance": "CTRP6548R",
+        "overseas_present_balance": "CTRP6504R",
         "ksd_dividend": "HHKDB669102C0",
         "period_rights": "CTRGA011R",
         "overseas_period_rights": "CTRGT011R",
@@ -76,6 +79,10 @@ class KIS:
             "PRCS_DVSN": "01",
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
+        },
+        "overseas_present_balance": {
+            "WCRC_FRCR_DVSN_CD": "02",            # 02 = 외화 기준
+            "NATN_CD": "840", "TR_MKET_CD": "00", "INQR_DVSN_CD": "00",   # 미국 · 전체 시장 · 전체
         },
         "ksd_dividend": {"CTS": "", "GB1": "0", "HIGH_GB": ""},           # GB1 0 = 결산·중간 전체
         "period_rights": {
@@ -131,6 +138,9 @@ class KIS:
     REQUEST_INTERVAL: float = 0.35            # 같은 클라이언트의 연속 요청 최소 간격(초)
     CONTINUE_CODES: tuple[str, ...] = ("M", "F")   # 응답 헤더 tr_cont: 다음 페이지 있음 (D·E·"" = 끝)
     MAX_PAGES: int = 20                       # 연속조회 무한 루프 방지
+
+    # ── 잔고 재시도 ──
+    BALANCE_RETRIES: int = 2                  # 잔고 API rt_cd 오류 시 총 시도 횟수 (TTTC8434R 일시 rt_cd=7 대비)
 
     # ── 배당 ──
     DIVIDEND_RIGHT_TYPES: tuple[str, ...] = ("32", "03")   # CTRGA011R 32 ETF 분배금, 03 주식 현금배당 (04 등 비현금 제외)

@@ -2,6 +2,7 @@
 Upbit API 원시 응답 → 도메인 DataFrame 변환 (순수 함수)
 
 - transform_upbit_balance(): 잔고 + 마켓 한글명 + T-1 일 캔들 종가 병합 (KRW 잔고 제외)
+- transform_upbit_deposit(): KRW 잔고(balance + 주문 대기 locked) → 예수금 1행, 0원이면 행 없음
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import pandas as pd
 
 from asset_flow.config.schemas import BALANCE_COLUMNS, UPBIT_RENAME
 from asset_flow.transformers.base_transformer import normalize_numeric
+from asset_flow.transformers.kis_transformer import cash_row
 
 
 def transform_upbit_balance(
@@ -55,3 +57,22 @@ def transform_upbit_balance(
         valuation_profit_rate=lambda df: df["total_profit_amount"] / df["total_purchase_amount"] * 100,
     )[BALANCE_COLUMNS]
     return normalize_numeric(result)
+
+
+def transform_upbit_deposit(balance_raw: list, standard_date: str, account_code: str, account_name: str) -> pd.DataFrame:
+    """
+    Purpose: Upbit 원화 예수금 (KRW balance + locked)
+    Parameter:
+        - balance_raw: /v1/accounts 응답
+        - standard_date: 기준일
+        - account_code: 계좌 코드 ('UPBIT')
+        - account_name: 표시명
+    Input: 없음
+    Output: DEPOSIT 1행 (exchange_code UPBIT), 0원이면 빈 DataFrame
+    """
+    krw = next((b for b in balance_raw if b.get("currency") == "KRW"), {})
+    amount = float(krw.get("balance") or 0) + float(krw.get("locked") or 0)
+    if amount == 0:
+        return pd.DataFrame(columns=BALANCE_COLUMNS)
+    account = {"account_code": account_code, "account_name": account_name}
+    return cash_row(standard_date, account, "DEPOSIT", "예수금", "KRW", "UPBIT", amount)
