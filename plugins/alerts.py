@@ -5,6 +5,7 @@ Discord 알림 콜백 (Airflow 3.x 전용)
 - DAG 복구: @dag(on_success_callback=discord_recovery_callback) — 직전 같은 유형 run 이 실패였을 때만
 - 공개 전송: post_discord(payload) / make_payload(embed) — 만료·휴장일·import error 알림이 재사용
 - 웹후크: env ASSET_FLOW_ENV=prod → Connection discord_alert, 그 외 → discord_alert_test (password = 전체 URL)
+- 에러 본문은 secrets 비밀값(키·cano·계좌번호)과 CANO 쿼리를 가린 뒤 전송 (태스크 로그 마스킹과 별개 경로)
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import time
 import traceback
@@ -32,6 +34,8 @@ ERROR_BUDGET = 1500                              # 에러 본문 상한 (모바�
 HTTP_TIMEOUT = (3, 5)
 MAX_ATTEMPTS = 3
 MAX_TOTAL_WAIT = 10.0                            # 429 대기 총합 상한 (워커 슬롯 점유 방지)
+MASK = "********"
+_ACCOUNT_QUERY = re.compile(r"((?:CANO|ACNT_PRDT_CD)=)[^&\s'\"]+", re.IGNORECASE)
 
 
 # ── 웹후크 선택·전송 ──
@@ -252,7 +256,36 @@ def _error_text(context: dict) -> str:
         text = "\n".join("".join(traceback.format_exception(exc)).strip().splitlines()[-8:])
     else:
         text = str(exc)
-    return _trunc(text.replace("```", "'''"), ERROR_BUDGET)
+    return _trunc(redact(text).replace("```", "'''"), ERROR_BUDGET)
+
+
+def _secret_values() -> list[str]:
+    """
+    Purpose: 알림 본문에서 가릴 비밀값 (secrets 의 app_key·app_secret·cano·account_no)
+    Parameter: 없음
+    Input: secrets 파일
+    Output: 긴 값부터 정렬한 리스트. 로드 실패 시 [] (알림은 계속)
+    """
+    try:
+        from asset_flow.secrets_config import load_secrets, secret_values
+
+        return sorted(set(secret_values(load_secrets(mask=False))), key=len, reverse=True)
+    except Exception:
+        log.warning("[alerts] secrets 로드 실패 — 비밀값 치환 없이 CANO 쿼리만 가림")
+        return []
+
+
+def redact(text: str) -> str:
+    """
+    Purpose: Discord 로 나갈 문자열에서 계좌번호·키 가리기 (DB DETAIL·HTTPError URL 등 모든 경로의 최후 방어선)
+    Parameter:
+        - text: 원문
+    Input: secrets 파일 (_secret_values)
+    Output: 비밀값·CANO/ACNT_PRDT_CD 쿼리 값을 ******** 로 바꾼 문자열
+    """
+    for v in _secret_values():
+        text = text.replace(v, MASK)
+    return _ACCOUNT_QUERY.sub(rf"\1{MASK}", text)
 
 
 def _was_previous_run_failed(context: dict) -> bool:

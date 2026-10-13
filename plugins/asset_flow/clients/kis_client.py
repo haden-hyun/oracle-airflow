@@ -4,12 +4,18 @@
 - 토큰은 호출부가 TokenManager.token_for() 로 받아 주입
 - config 는 기존 Variable 모양 dict (secrets_config.kis_client_config 로 생성)
 - 제공: get_overseas_balance / get_domestic_balance / get_account_balance / get_exchange_rate (원시 JSON 반환)
+- 계좌번호가 응답 본문(ctx_area_*·acno10)에 평문으로 올 수 있음 → _redact 로 실패 로그·예외에서 가림
 """
 
 from __future__ import annotations
 
+import re
+
 from asset_flow.clients.base_client import BaseApiClient
 from asset_flow.config.kis import KIS
+
+# 응답 본문의 계좌번호 필드 (ctx_area_nk100 · ctx_area_fk100 · acno10 · cano) 값
+_ACCOUNT_FIELD = re.compile(r'("(?:ctx_area_[a-z0-9]+|acno\d*|cano)"\s*:\s*")[^"]*(")', re.IGNORECASE)
 
 
 class KISApiClient(BaseApiClient):
@@ -43,6 +49,18 @@ class KISApiClient(BaseApiClient):
             "appSecret": self.config["secret"],
             "tr_id": tr_id,
         }
+
+    def _redact(self, text: str) -> str:
+        """
+        Purpose: 실패 로그·예외용 본문에서 계좌번호 가리기
+        Parameter:
+            - text: 응답 본문
+        Input: 없음
+        Output: ctx_area_*·acno*·cano 값과 이 클라이언트 계좌번호를 ******** 로 바꾼 문자열
+        """
+        text = _ACCOUNT_FIELD.sub(r"\1********\2", text)
+        account = self.config.get("account")
+        return text.replace(account, "********") if account else text
 
     def _get_account(self, name: str) -> dict:
         """
