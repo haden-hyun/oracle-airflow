@@ -34,7 +34,11 @@ docker compose build
 docker compose up -d postgres && docker compose up airflow-init   # 최초 1회
 docker compose up -d
 docker compose down          # -v 금지 (메타 DB 삭제)
+docker compose restart airflow-scheduler airflow-dag-processor airflow-apiserver   # plugins/ 변경 후 필수
 ```
+
+- `dags/` 는 자동 재파싱, **`plugins/` 는 재시작 전까지 옛 모듈로 실행** (워커가 스케줄러에서 fork)
+- 배포·재시작은 05:50~07:40 KST 피함
 
 ### `.env` (gitignore)
 
@@ -57,12 +61,13 @@ docker compose down          # -v 금지 (메타 DB 삭제)
 airflow/
 ├── dags/
 │   ├── config/asset_flow.yaml     # 비밀 아닌 설정
-│   └── *.py                       # DAG 7개 (아래 표)
+│   └── *.py                       # DAG 9개 (아래 표)
 ├── plugins/
 │   ├── alerts.py                  # Discord 실패·복구 콜백
 │   ├── import_error_alert.py      # DAG import 오류 → Discord
 │   └── asset_flow/                # 비즈니스 로직
 ├── secrets/                       # asset_flow.secrets.yaml (서버 전용) + example + README
+├── db/migrations/                 # Airflow 소유 market·account DDL (사람이 적용, README 참고)
 ├── tests/                         # pytest (순수 로직)
 ├── data/tokens/tokens.json        # KIS 토큰 캐시 (gitignore)
 └── Dockerfile · docker-compose.yaml · requirements.txt · .env
@@ -83,6 +88,8 @@ airflow/
          │ 센서: 기준일 환율 4종 · 필요 펀드 기준가
 07:00  account_ingest_asset_daily
          collect_account × 활성 계좌 → refresh_dashboard_views
+07:10  market_ingest_product_price_daily      (센서: 토큰 · T-1 asset_daily 전 계좌)
+07:20  account_ingest_dividend                (센서: 토큰 · 미국 추정만 T-1 asset_daily)
 ```
 
 ## DAG
@@ -94,6 +101,8 @@ airflow/
 | `market_ingest_fund_price_daily` | `market.fund_price_daily` | Playwright 크롤링, 실패 코드 1회 재시도, 누락 시 실패·알림 |
 | `account_ingest_asset_daily` | `account.asset_daily` | 계좌당 1 태스크, 0건이면 DELETE 전 실패(기존분 보존) |
 | `market_ingest_trading_holiday` | `market.trading_holiday` | 평일 휴장일 3년치, `is_manual` 보호, 변경 시 알림 |
+| `market_ingest_product_price_daily` | `market.product` · `product_price_daily` · `fund_price_daily`(빈 날짜) | 원주가 1년 유지, 빈 구간·최근 5거래일 재수집, KOFIA 펀드는 스위치(`fund_nav_enabled`) |
+| `account_ingest_dividend` | `market.dividend_event` · `account.dividend_receipt` | 일정 −400~+60/120일·원장 −100일 UPSERT(DELETE 없음), 미국 추정 원장(15%) |
 | `account_upsert_manual_position_ledger` | `account.manual_position_ledger` | 수동: 수기 원장 입력 → 해당 계좌 재계산 |
 | `account_rebuild_ledger_assets` | `account.asset_daily` | 수동: 수기 계좌 기간 재계산 (`end_date` 비우면 최종 계산일) |
 
@@ -104,7 +113,9 @@ airflow/
 - 센서는 상류 run 이 아닌 **데이터 존재**로 판정 (30초 간격, 최대 10분) → 수동 재실행 가능
 - 적재 DAG 마지막: `CALL dashboard.refresh_views()` (일부 실패해도 갱신, run 은 실패 유지)
 - 적재 테이블 = Airflow Asset `outlets` (계보·이력 표시 전용, 스케줄 미사용)
-- 알림: 태스크 최종 실패 시 Discord, 직전 run 실패였으면 복구 알림
+- 알림: 태스크 최종 실패 시 Discord, 직전 run 실패였으면 복구 알림 (본문의 키·계좌번호는 `alerts.redact` 로 가림)
+- 시세·배당 DAG 는 지연 run skip 없음(이력 API), 토큰 발급 안 함(`existing_token`)
+- 수동 run 의 T = 트리거 시각 → 07:00 전 수동 실행은 asset_daily 센서가 대기
 
 ## 계좌 kind (`secrets` `accounts[].kind`)
 
@@ -145,7 +156,7 @@ airflow/
 | 파일 | 내용 |
 |---|---|
 | `secrets/asset_flow.secrets.yaml` | `credentials[]`(키·만료일), `accounts[]`(계좌번호·kind·표시명·활성), `services` — 절차는 [secrets/README.md](secrets/README.md) |
-| `dags/config/asset_flow.yaml` | 테이블명, 연금 펀드·크롤 대상, 수기 유형 product_code·multiplier, 만료 알림 규칙, MV 갱신 프로시저명 |
+| `dags/config/asset_flow.yaml` | 테이블명, 연금 펀드·크롤 대상, 수기 유형 product_code·multiplier, 만료 알림 규칙, MV 갱신 프로시저명, `price_ingest`, `dividend` |
 
 - 변경은 다음 태스크부터 반영 (재시작 불필요)
 - 계좌 추가·해지(`enabled: false`)·키 교체 = secrets 만 수정
@@ -161,11 +172,13 @@ airflow/
 | `finalize.py` | MV 갱신 + 상류 실패 반영 |
 | `tokens.py` | KIS 토큰 (credential 단위·flock·원자적 저장) |
 | `pipeline/dispatch.py` | kind → 수집 핸들러, `collect_account` |
+| `pipeline/price_plan.py` | 시세 수집 창 계산·소스별 수집·지연 점검 |
+| `pipeline/dividend.py` · `transformers/dividend_transformer.py` | 배당 수집 본체·변환 (미국 추정 원장) |
 | `ops/key_expiry.py` | 키 만료·설정 정합성 점검 |
 | `holiday.py` | 휴장일 계산·변경 비교 |
 | `db_manager.py` | 자산 DB 읽기·쓰기 (쓰기 가드) |
 | `runtime.py` | 기준일 계산, 지연 run skip |
-| `clients/` · `transformers/` · `crawler/` · `config/` | API 클라이언트, DataFrame 변환, 펀드 크롤러, 상수·스키마 |
+| `clients/` · `transformers/` · `crawler/` · `config/` | KIS(`_request`·`_get_pages`)·Upbit·KOFIA 클라이언트, 변환, 펀드 크롤러, 상수·스키마 |
 
 ## 테스트
 
