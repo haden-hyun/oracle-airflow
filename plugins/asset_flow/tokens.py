@@ -157,6 +157,18 @@ class TokenManager:
         """
         return self._valid_token(cred_id, credential_fingerprint(self.cfg.credential(cred_id))) is not None
 
+    def existing_token(self, cred_id: str) -> str:
+        """
+        Purpose: 이미 발급된 유효 토큰만 반환 (발급하지 않음 — 시세·배당 DAG 용, 발급 주체는 06:50 토큰 DAG)
+        Parameter:
+            - cred_id: KIS credential id
+        Input: tokens.json
+        Output: 토큰 문자열. 없으면 RuntimeError (토큰 DAG 복구 후 재실행)
+        """
+        if token := self._valid_token(cred_id, credential_fingerprint(self.cfg.credential(cred_id))):
+            return token
+        raise RuntimeError(f"[{cred_id}] 유효 토큰 없음 — auth_issue_api_tokens 확인 후 재실행 (이 DAG 는 발급 안 함)")
+
     def ensure_all(self, cred_ids: Iterable[str]) -> list[str]:
         """
         Purpose: 여러 credential 토큰 확보 — 실패는 그 id 에만 격리

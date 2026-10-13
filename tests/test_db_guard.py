@@ -47,6 +47,11 @@ def test_write_guard(monkeypatch, env, dbname, allowed):
     lambda e: db.upsert_ledger(e, {}),
     lambda e: db.replace_trading_holidays(e, "2025-01-01", "2027-12-31", []),
     lambda e: db.call_procedure(e, "dashboard.refresh_views"),
+    lambda e: db.upsert_rows(e, "market", "dividend_event", [{"a": 1}], ["a"], "2026-10-13"),
+    lambda e: db.upsert_products(e, "2026-10-13", 30),
+    lambda e: db.upsert_product_prices(e, [{"a": 1}]),
+    lambda e: db.insert_missing_fund_prices(e, [{"a": 1}]),
+    lambda e: db.set_price_from_date(e, "X", "2026-10-13"),
 ])
 def test_all_writers_guarded_before_db(monkeypatch, write):
     monkeypatch.delenv("ASSET_FLOW_ENV", raising=False)

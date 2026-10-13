@@ -263,3 +263,14 @@ def test_has_valid_token_never_issues(tmp_path, cfg, calls, monkeypatch):
     assert tm.has_valid_token("KIS_STOCK") is True
     assert tm.has_valid_token("KIS_ISA") is False
     assert calls == []
+
+
+def test_existing_token_never_issues(tmp_path, cfg, calls, monkeypatch):
+    # 시세·배당 DAG 용: 발급 허용 환경이어도 발급하지 않고 실패
+    monkeypatch.setenv("TOKEN_ISSUE_ENABLED", "true")
+    _store(tmp_path, cfg, KIS_STOCK=("OK", 20, True), KIS_ISA=("NEAR", 0.5, True))
+    tm = tk.TokenManager(cfg, tmp_path)
+    assert tm.existing_token("KIS_STOCK") == "OK"
+    with pytest.raises(RuntimeError, match="유효 토큰 없음"):
+        tm.existing_token("KIS_ISA")
+    assert calls == []

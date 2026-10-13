@@ -3,7 +3,9 @@
 
 - 진입점: load_app_config() → AppConfig (pydantic strict, frozen)
 - 경로: env ASSET_FLOW_CONFIG (기본 /opt/airflow/dags/config/asset_flow.yaml)
-- 내용: 적재 테이블, 펀드코드, 수기 계좌 유형별 product_code·multiplier, 만료 알림 규칙, 대시보드 갱신 프로시저
+- 내용: 적재 테이블, 펀드코드, 수기 계좌 유형별 product_code·multiplier, 만료 알림 규칙, 대시보드 갱신 프로시저,
+        시세 수집(price_ingest), 배당 수집(dividend)
+- yaml 과 이 모델은 같은 커밋으로 배포 (extra=forbid — 한쪽만 바뀌면 모든 DAG 의 설정 로드 실패)
 """
 
 from __future__ import annotations
@@ -30,6 +32,10 @@ class Tables(_Strict):
     asset_daily: Table
     exchange_rate_daily: Table
     fund_price_daily: Table
+    product: Table
+    product_price_daily: Table
+    dividend_event: Table
+    dividend_receipt: Table
 
 
 class Funds(_Strict):
@@ -53,12 +59,41 @@ class Dashboard(_Strict):
     refresh_procedure: str = Field(pattern=r"^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$")
 
 
+class PriceIngest(_Strict):
+    lookback_days: int = Field(ge=30, le=3650)          # 신규·재매수 백필 한도
+    refetch_trading_days: int = Field(ge=1, le=30)      # 매일 재수집 거래일 수
+    tracked_after_sale_days: int = Field(ge=0, le=365)  # 매도 후 추적 일수
+    request_interval_sec: float = Field(ge=0.1, le=5)   # 업비트·KOFIA 호출 간격
+    fund_nav_enabled: bool = False                      # KOFIA 펀드 기준가 보충 스위치
+
+
+class DividendWindows(_Strict):
+    # 기준 = run 의 KST 날짜(T). 일정 −400일은 TTM·작년 같은 달 투영, 원장 −100일은 결산배당 50일 지연·정정 재조회
+    kr_event_back: int = Field(ge=1)            # 국내 일정 기준일 T−n
+    kr_event_forward: int = Field(ge=0)         # 국내 일정 기준일 T+n
+    us_event_back: int = Field(ge=60)           # 미국 일정 T−n (권리종합은 공시일 기준 → 기준일보다 앞서 시작)
+    us_event_forward: int = Field(ge=0)         # 미국 일정 T+n
+    receipt_back: int = Field(ge=1)             # 국내 원장 기준일 T−n
+    estimate_back: int = Field(ge=1)            # 미국 추정 락일 T−n
+    held_back: int = Field(ge=1)                # 조회 대상 = 이 기간 보유 이력 종목
+
+
+class Dividend(_Strict):
+    windows: DividendWindows
+    receipt_kinds: list[str]                    # 원장(CTRGA011R) 조회 계좌 kind (secrets accounts[].kind)
+    us_withholding_rate: float = Field(ge=0, lt=1)   # 미국 추정 원장 원천징수율
+    extra_kr_codes: list[str] = []              # 보유 이력 없이도 조회할 국내 코드
+    refresh_dashboard_views: bool = False       # true 면 마지막에 대시보드 MV 갱신
+
+
 class AppConfig(_Strict):
     tables: Tables
     funds: Funds
     manual_asset_types: dict[str, ManualAssetType]   # 키 = account_master.account_type
     credential_check: CredentialCheck
     dashboard: Dashboard
+    price_ingest: PriceIngest
+    dividend: Dividend
 
 
 def load_app_config(path: str | os.PathLike | None = None) -> AppConfig:

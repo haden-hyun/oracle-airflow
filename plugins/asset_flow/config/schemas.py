@@ -4,8 +4,11 @@
 - KIS_RENAME / UPBIT_RENAME: API 응답 필드 → 도메인 필드
 - BalanceRecord / ExchangeRateRecord: asset_daily / exchange_rate_daily 스키마
 - BALANCE_COLUMNS / EXCHANGE_RATE_COLUMNS: DataFrame 컬럼 순서
+- DividendEventRecord / DividendReceiptRecord (+ _COLUMNS·_PK): market.dividend_event / account.dividend_receipt
+- PRICE_RENAME, PriceRecord / FundPriceRecord (+ _COLUMNS): market.product_price_daily / fund_price_daily
 """
 
+import datetime as dt
 from typing import TypedDict
 
 # ── API 필드명 → 도메인 필드명 변환 매핑 ──
@@ -96,6 +99,93 @@ class ExchangeRateRecord(TypedDict):
     lowest_price: float
 
 
+class DividendEventRecord(TypedDict):
+    product_code: str
+    record_date: dt.date
+    dividend_kind: str              # CASH | SPECIAL
+    market: str                     # KR | US
+    product_name: str | None
+    dividend_label: str | None      # KR divi_kind(결산·분기·반기·'') / US ca_title — 원문
+    ex_date: dt.date | None
+    pay_date: dt.date | None
+    dps_amount: float | None        # NULL = 금액 미정 (US 금액 지연, KR 미확정 0원)
+    currency_code: str
+    dividend_rate: float | None     # KR divi_rate 원문 (의미 불명, 화면 미사용)
+    is_confirmed: bool
+    announce_date: dt.date | None
+    source: str
+
+
+class DividendReceiptRecord(TypedDict):
+    account_code: str
+    product_code: str
+    record_date: dt.date
+    right_type_code: str            # 32 | 03 | EST03 | EST75
+    product_name: str | None
+    ex_date: dt.date | None
+    pay_date: dt.date | None
+    holding_quantity: float
+    gross_amount: float | None      # 원통화 세전 (추정 행만 NULL 허용)
+    tax_amount: float | None        # 원천 tax_amt 그대로 (ISA 는 미징수 참고값) / 추정 = 세전 × 15%
+    currency_code: str
+    fx_rate: float | None           # 추정(USD) 행만: 지급일 이하 최신 USD 기준율
+    is_estimated: bool
+    source: str
+
+
+# ── 일봉 API 필드 → product_price_daily 컬럼 ──
+PRICE_RENAME: dict[str, dict[str, str]] = {
+    "domestic_daily_price": {
+        "stck_bsop_date": "standard_date",  # 영업일자 YYYYMMDD
+        "stck_oprc": "opening_price",       # 시가
+        "stck_hgpr": "highest_price",       # 고가
+        "stck_lwpr": "lowest_price",        # 저가
+        "stck_clpr": "closing_price",       # 종가
+        "acml_vol": "trading_volume",       # 누적거래량
+    },
+    "overseas_daily_price": {
+        "xymd": "standard_date",            # 현지 일자 YYYYMMDD
+        "open": "opening_price",
+        "high": "highest_price",
+        "low": "lowest_price",
+        "clos": "closing_price",
+        "tvol": "trading_volume",
+    },
+    "upbit_day_candle": {
+        "opening_price": "opening_price",
+        "high_price": "highest_price",
+        "low_price": "lowest_price",
+        "trade_price": "closing_price",
+        "candle_acc_trade_volume": "trading_volume",
+    },
+}
+
+
+class PriceRecord(TypedDict):
+    standard_date: str
+    product_code: str
+    opening_price: float
+    highest_price: float
+    lowest_price: float
+    closing_price: float
+    trading_volume: float
+    currency_code: str
+    source: str
+
+
+class FundPriceRecord(TypedDict):
+    standard_date: str
+    product_code: str
+    product_name: str
+    standard_price: float
+
+
 # ── pandas 컬럼 선택용 리스트 (TypedDict에서 파생) ──
 BALANCE_COLUMNS: list[str] = list(BalanceRecord.__annotations__.keys())
 EXCHANGE_RATE_COLUMNS: list[str] = list(ExchangeRateRecord.__annotations__.keys())
+DIVIDEND_EVENT_COLUMNS: list[str] = list(DividendEventRecord.__annotations__.keys())
+DIVIDEND_RECEIPT_COLUMNS: list[str] = list(DividendReceiptRecord.__annotations__.keys())
+DIVIDEND_EVENT_PK: list[str] = ["product_code", "record_date", "dividend_kind"]
+DIVIDEND_RECEIPT_PK: list[str] = ["account_code", "product_code", "record_date", "right_type_code"]
+PRICE_COLUMNS: list[str] = list(PriceRecord.__annotations__.keys())
+FUND_PRICE_COLUMNS: list[str] = list(FundPriceRecord.__annotations__.keys())

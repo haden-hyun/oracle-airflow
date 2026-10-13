@@ -13,6 +13,10 @@ TRADING_HOLIDAY = Asset("market.trading_holiday", uri="asset://market/trading_ho
 EXCHANGE_RATE = Asset("market.exchange_rate_daily", uri="asset://market/exchange_rate_daily", group="market")
 FUND_PRICE = Asset("market.fund_price_daily", uri="asset://market/fund_price_daily", group="market")
 ASSET_DAILY = Asset("account.asset_daily", uri="asset://account/asset_daily", group="account")
+PRODUCT = Asset("market.product", uri="asset://market/product", group="market")
+PRODUCT_PRICE = Asset("market.product_price_daily", uri="asset://market/product_price_daily", group="market")
+DIVIDEND_EVENT = Asset("market.dividend_event", uri="asset://market/dividend_event", group="market")
+DIVIDEND_RECEIPT = Asset("account.dividend_receipt", uri="asset://account/dividend_receipt", group="account")
 MANUAL_LEDGER = Asset("account.manual_position_ledger", uri="asset://account/manual_position_ledger", group="account")
 
 
