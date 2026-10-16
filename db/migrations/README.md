@@ -30,6 +30,7 @@ docker compose exec -T airflow-scheduler sh -c 'psql "$AIRFLOW_CONN_POSTGRES_ASS
 ```
 
 - 호스트 psql 은 `host.docker.internal` 을 못 풀어 실패 → 위 컨테이너 방식만
+- 대시보드 테스트용 개발 DB(`127.0.0.1:55432` 의 `asset` · `asset_nosrc`, 대시보드 저장소 소유)에도 같은 파일을 적용해야 대시보드 pytest 가 맞음 (004·005 는 대시보드 세션이 적용함)
 - `-T` 필수 (stdin 리다이렉트), `ON_ERROR_STOP=1` 로 첫 오류에서 중단 → 트랜잭션 롤백
 
 ## 컬럼 이름 규칙 (기존 account·market 테이블 관례)
@@ -45,8 +46,8 @@ docker compose exec -T airflow-scheduler sh -c 'psql "$AIRFLOW_CONN_POSTGRES_ASS
 | `001_market_product` | `market.product`, `market.product_price_daily` | `market_ingest_product_price_daily` (07:10) | 2026-10-14 |
 | `002_dividend` | `market.dividend_event`, `account.dividend_receipt` | `account_ingest_dividend` (07:20) | 2026-10-14 |
 | `003_dividend_column_names` | 배당 컬럼명 표준화 (`per_share_dividend_amount` · `dividend_type` · `exchange_rate`) | — | 2026-10-14 |
-| `004_market_index_daily` | `market.index_daily` (코스피·코스닥·S&P 500·나스닥 종합 일봉) | `market_ingest_reference_daily` `market_index` (06:55) | — |
-| `005_exchange_rate_column_names` | 환율 `symbol` → `source_symbol`, `source`·`update_datetime` 추가 / 펀드 PK 이름 `fund_price_daily_pkey` | — (대시보드와 동시 배포) | — |
+| `004_market_index_daily` | `market.index_daily` (코스피·코스닥·S&P 500·나스닥 종합 일봉) | `market_ingest_reference_daily` `market_index` (06:55) | 2026-10-17 |
+| `005_exchange_rate_column_names` | 환율 `symbol` → `source_symbol`, `source`·`update_datetime` 추가 / 펀드 PK 이름 `fund_price_daily_pkey` | — (대시보드와 동시 배포) | 2026-10-17 |
 
 - 001 이전 테이블(asset_daily·fund_price_daily·exchange_rate_daily 등)은 이 디렉터리에 정의 없음
   - 예: `market.trading_holiday` = 대시보드 저장소 `db/migrations/006` (002 머리 주석)
