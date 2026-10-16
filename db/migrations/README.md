@@ -45,6 +45,8 @@ docker compose exec -T airflow-scheduler sh -c 'psql "$AIRFLOW_CONN_POSTGRES_ASS
 | `001_market_product` | `market.product`, `market.product_price_daily` | `market_ingest_product_price_daily` (07:10) | 2026-10-14 |
 | `002_dividend` | `market.dividend_event`, `account.dividend_receipt` | `account_ingest_dividend` (07:20) | 2026-10-14 |
 | `003_dividend_column_names` | 배당 컬럼명 표준화 (`per_share_dividend_amount` · `dividend_type` · `exchange_rate`) | — | 2026-10-14 |
+| `004_market_index_daily` | `market.index_daily` (코스피·코스닥·S&P 500·나스닥 종합 일봉) | `market_ingest_reference_daily` `market_index` (06:55) | — |
+| `005_exchange_rate_column_names` | 환율 `symbol` → `source_symbol`, `source`·`update_datetime` 추가 / 펀드 PK 이름 `fund_price_daily_pkey` | — (대시보드와 동시 배포) | — |
 
 - 001 이전 테이블(asset_daily·fund_price_daily·exchange_rate_daily 등)은 이 디렉터리에 정의 없음
   - 예: `market.trading_holiday` = 대시보드 저장소 `db/migrations/006` (002 머리 주석)
@@ -57,7 +59,9 @@ docker compose exec -T airflow-scheduler sh -c 'psql "$AIRFLOW_CONN_POSTGRES_ASS
 |---|---|---|
 | `market.product` | `product_code` | `price_source` ∈ KIS_KR_DAILY·KIS_US_DAILY·UPBIT_DAY·FUND_NAV·NONE |
 | `market.product_price_daily` | `(product_code, standard_date)` | 원주가, 거래일만, `closing_price > 0`, 펀드 제외 |
-| `market.dividend_event` | `(product_code, record_date, dividend_kind)` | `dividend_kind` ∈ CASH·SPECIAL, `last_seen_date` |
+| `market.index_daily` | `(index_code, standard_date)` | 현지 거래일만(이월 없음), `market` ∈ KR·US, `closing_price > 0` |
+| `market.exchange_rate_daily` | `(standard_date, source_symbol, currency_code)` | 달력일 전부(주말 = 직전 고시), `source` = KIS_FX_DAILY (005) |
+| `market.dividend_event` | `(product_code, record_date, dividend_type)` | `dividend_type` ∈ CASH·SPECIAL, `last_seen_date` |
 | `account.dividend_receipt` | `(account_code, product_code, record_date, right_type_code)` | `right_type_code` ∈ 32·03·EST03·EST75, `EST*` ⇔ `is_estimated` |
 
 - `last_seen_date` < 같은 종목·계좌 최신값 이고 기준일이 재조회 창 안 → 정정으로 사라진 행 (읽는 쪽이 거름)

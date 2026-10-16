@@ -8,6 +8,7 @@
 - 배당: get_dividend_targets / get_us_holdings / get_usd_rates / get_us_dividend_events / upsert_rows(쓰기)
 - 시세: get_price_targets (조회), upsert_products / upsert_product_prices /
         insert_missing_fund_prices / set_price_from_date (쓰기)
+- 기준 데이터: get_index_last_dates (조회), upsert_index_prices / insert_missing_exchange_rates (쓰기)
 - 모든 쓰기 함수는 첫 줄에서 ensure_writable() — prod 가 아니면 *_staging DB 에만 쓴다
 """
 
@@ -752,6 +753,74 @@ def set_price_from_date(engine: Engine, product_code: str, first_date: str) -> N
             UPDATE market.product SET price_from_date = CAST(:d AS date), update_datetime = now()
              WHERE product_code = :c AND (price_from_date IS NULL OR price_from_date > CAST(:d AS date))
         """), {"c": product_code, "d": first_date})
+
+
+# ── 기준 데이터 (market_ingest_reference_daily) ──
+def get_index_last_dates(engine: Engine) -> dict[str, date]:
+    """
+    Purpose: 지수별 적재된 마지막 날짜 (수집 창 계산)
+    Parameter:
+        - engine: 업무 DB 엔진
+    Input: market.index_daily
+    Output: {index_code: date} (적재분 없는 지수는 키 없음)
+    """
+    sql = text("SELECT index_code, max(standard_date) FROM market.index_daily GROUP BY index_code")
+    with engine.connect() as conn:
+        return {r[0]: r[1] for r in conn.execute(sql)}
+
+
+def upsert_index_prices(engine: Engine, records: list) -> int:
+    """
+    Purpose: 지수 일봉 upsert — 값이 다를 때만 갱신 (DELETE 없음)
+    Parameter:
+        - engine: 업무 DB 엔진
+        - records: INDEX_COLUMNS 레코드 (standard_date 는 YYYY-MM-DD)
+    Input: 없음
+    Output: 넘긴 행 수 (+ market.index_daily 쓰기, 단일 트랜잭션)
+    """
+    if not records:
+        return 0
+    ensure_writable(engine)
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO market.index_daily AS t
+                   (standard_date, index_code, market, opening_price, highest_price, lowest_price, closing_price, source)
+            VALUES (CAST(:standard_date AS date), :index_code, :market, :opening_price, :highest_price, :lowest_price,
+                    :closing_price, :source)
+            ON CONFLICT (index_code, standard_date) DO UPDATE SET
+                   opening_price = EXCLUDED.opening_price, highest_price = EXCLUDED.highest_price,
+                   lowest_price = EXCLUDED.lowest_price, closing_price = EXCLUDED.closing_price,
+                   update_datetime = now()
+             WHERE (t.opening_price, t.highest_price, t.lowest_price, t.closing_price)
+                   IS DISTINCT FROM (EXCLUDED.opening_price, EXCLUDED.highest_price, EXCLUDED.lowest_price,
+                                     EXCLUDED.closing_price)
+        """), [_nan_to_none(r) for r in records])
+    return len(records)
+
+
+def insert_missing_exchange_rates(engine: Engine, records: list) -> int:
+    """
+    Purpose: 환율 빈 날짜만 추가 (백필) — 기존 행(매일 run 적재분)은 절대 바꾸지 않음
+    Parameter:
+        - engine: 업무 DB 엔진
+        - records: EXCHANGE_RATE_COLUMNS 레코드
+    Input: 없음
+    Output: 실제 추가된 행 수 (+ market.exchange_rate_daily INSERT ... ON CONFLICT DO NOTHING, 건별 rowcount 합)
+    """
+    if not records:
+        return 0
+    ensure_writable(engine)
+    sql = text("""
+        INSERT INTO market.exchange_rate_daily
+               (standard_date, source_symbol, currency_code, currency_pair_name, base_rate, previous_day_closing_price,
+                opening_price, highest_price, lowest_price, source)
+        VALUES (CAST(:standard_date AS date), :source_symbol, :currency_code, :currency_pair_name, :base_rate,
+                :previous_day_closing_price, :opening_price, :highest_price, :lowest_price, :source)
+        ON CONFLICT (standard_date, source_symbol, currency_code) DO NOTHING
+    """)
+    with engine.begin() as conn:
+        # executemany rowcount 합계는 드라이버마다 달라 건별 실행 (4통화 × 수백 일)
+        return sum(conn.execute(sql, _nan_to_none(r)).rowcount for r in records)
 
 
 def _nan_to_none(r: dict) -> dict:

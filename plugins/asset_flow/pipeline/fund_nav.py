@@ -1,5 +1,5 @@
 """
-펀드 기준가 수집 (market_ingest_fund_price_daily 본체) — KOFIA 주 경로 + fundguide 크롤러 대체 경로
+펀드 기준가 수집 (market_ingest_reference_daily fund_price 그룹 본체) — KOFIA 주 경로 + fundguide 크롤러 대체 경로
 
 - nav_for_date: KOFIA 기준일 이력 → 기준일 값 (T-1 이하 최신 기준가 = 주말·휴일 이월, 지연이면 None)
 - collect_fund_prices: 코드별 KOFIA 조회 → 빠진 코드만 크롤러 (config funds.crawler_fallback)

@@ -7,7 +7,9 @@ KIS API 원시 응답 → 도메인 DataFrame 변환 (순수 함수)
 - transform_rp_note_balance: 위탁 RP/발행어음 (CTRP6548R "RP/발행어음" 행, 행 수·합계 검증)
 - transform_deposit / transform_foreign_deposit: 예수금 (원화 D+2 정산 · 통화별 외화, 0원이면 행 없음)
 - account_total_gap: 적재 행 합계 ↔ CTRP6548R 계좌 총자산 대조 (경고 문구만)
-- transform_exchange_rate: 환율 + GBP·EUR 원화 교차 환산
+- transform_exchange_rate: 환율 + GBP·EUR 원화 교차 환산 (매일 run, output1 현재값)
+- transform_exchange_rate_history: 환율 이력(output2) → 달력일 이월 + 날짜별 교차 환산 (백필)
+- to_index_frame: 지수 이력(output2) → index_daily 레코드
 """
 
 from __future__ import annotations
@@ -15,12 +17,14 @@ from __future__ import annotations
 import pandas as pd
 
 from asset_flow.config.kis import KIS
-from asset_flow.config.schemas import BALANCE_COLUMNS, EXCHANGE_RATE_COLUMNS, KIS_RENAME
+from asset_flow.config.schemas import BALANCE_COLUMNS, CHART_RENAME, EXCHANGE_RATE_COLUMNS, INDEX_COLUMNS, KIS_RENAME
 from asset_flow.transformers.base_transformer import normalize_numeric
 
 _CURRENCY_CODE_MAP = {"원/달러": "USD", "원/엔": "JPY", "원/파운드": "GBP", "원/유로": "EUR"}
 EXCHANGE_CURRENCIES = sorted(_CURRENCY_CODE_MAP.values())     # 환율 DAG 가 적재하는 통화
 _PRICE_COLS = ["base_rate", "previous_day_closing_price", "opening_price", "highest_price", "lowest_price"]
+FX_SOURCE = "KIS_FX_DAILY"                                    # exchange_rate_daily.source
+_INDEX_NUM = ["opening_price", "highest_price", "lowest_price", "closing_price"]
 _AMOUNT_COLS = ["total_purchase_amount", "total_evaluation_amount", "total_profit_amount"]
 
 
@@ -193,7 +197,73 @@ def transform_exchange_rate(raw_list: list, standard_date: str) -> pd.DataFrame:
     cross["currency_pair_name"] = cross["currency_pair_name"].str.replace("달러/", "원/")
     result = pd.concat([df[~cross_mask], cross], ignore_index=True)
     result["currency_code"] = result["currency_pair_name"].map(_CURRENCY_CODE_MAP)
+    result["source"] = FX_SOURCE
     return result[EXCHANGE_RATE_COLUMNS]
+
+
+def transform_exchange_rate_history(raw: dict[str, list[dict]], start: str, end: str) -> pd.DataFrame:
+    """
+    Purpose: 환율 이력 → 달력일 행 (주말·휴일 = 직전 고시 이월) + 날짜별 GBP·EUR 원화 교차 환산
+    Parameter:
+        - raw: {심볼: get_chart_history("exchange_rate", …) 행} — start 보다 앞선 이월 시작값 포함
+        - start: 적재 시작일 YYYY-MM-DD
+        - end: 적재 끝일 YYYY-MM-DD
+    Input: 없음
+    Output: EXCHANGE_RATE_COLUMNS DataFrame (start~end 달력일 × 통화, 이월 시작값이 없는 날은 제외).
+            매일 run(06:55 현재값을 T-1 로 기록)과 같은 의미: 그날 이하 마지막 고시값, 전일 종가 = 그 직전 고시값
+    """
+    days = pd.date_range(start, end, freq="D").strftime("%Y-%m-%d")
+    frames = {}
+    for symbol, rows in raw.items():
+        df = pd.DataFrame(rows).rename(columns=CHART_RENAME["exchange_rate"])
+        if df.empty:
+            continue
+        df["standard_date"] = pd.to_datetime(df["standard_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
+        cols = ["base_rate", "opening_price", "highest_price", "lowest_price"]
+        df[cols] = df[cols].apply(pd.to_numeric, errors="coerce")
+        df = df[df["base_rate"] > 0].drop_duplicates("standard_date").sort_values("standard_date")
+        df["previous_day_closing_price"] = df["base_rate"].shift(1)
+        df = df.set_index("standard_date")[_PRICE_COLS]
+        frames[symbol] = df.reindex(df.index.union(days)).sort_index().ffill().loc[days]
+    usd = frames.get("FX@KRWKFTC")
+    out = []
+    for symbol, df in frames.items():
+        pair = KIS.EXCHANGE_RATE_PAIRS[symbol]
+        if pair.startswith("달러/"):
+            if usd is None:
+                raise ValueError("교차 환산에 원/달러 이력이 필요함 (FX@KRWKFTC 0행)")
+            df, pair = df * usd, pair.replace("달러/", "원/")
+        df = df.dropna(subset=["base_rate"]).reset_index(names="standard_date")
+        out.append(df.assign(source_symbol=symbol, currency_pair_name=pair,
+                             currency_code=_CURRENCY_CODE_MAP[pair], source=FX_SOURCE))
+    if not out:
+        return pd.DataFrame(columns=EXCHANGE_RATE_COLUMNS)
+    return pd.concat(out, ignore_index=True)[EXCHANGE_RATE_COLUMNS]
+
+
+def to_index_frame(name: str, rows: list[dict], index_code: str, market: str, end: str) -> pd.DataFrame:
+    """
+    Purpose: 지수 이력 원시 행 → index_daily 레코드
+    Parameter:
+        - name: CHART_RENAME 키 (domestic_index_daily | overseas_index_daily)
+        - rows: get_chart_history 결과
+        - index_code: 적재 키 (KOSPI 등)
+        - market: KR | US
+        - end: 적재 상한일 YYYY-MM-DD (이후 = 장중 행 제거)
+    Input: 없음
+    Output: INDEX_COLUMNS DataFrame (standard_date 오름차순, 종가 0 이하 제거). 행 없으면 빈 DataFrame
+    """
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame(columns=INDEX_COLUMNS)
+    df = df.rename(columns=CHART_RENAME[name])
+    df["standard_date"] = pd.to_datetime(df["standard_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
+    for col in _INDEX_NUM:
+        df[col] = pd.to_numeric(df[col], errors="coerce") if col in df else float("nan")
+    df[_INDEX_NUM[:3]] = df[_INDEX_NUM[:3]].where(df[_INDEX_NUM[:3]] > 0)      # 시가 등 0 = 값 없음
+    df = df.assign(index_code=index_code, market=market, source=KIS.INDEX_SOURCES[market])
+    df = df[(df["standard_date"] <= end) & (df["closing_price"] > 0)]
+    return df.drop_duplicates("standard_date").sort_values("standard_date")[INDEX_COLUMNS].reset_index(drop=True)
 
 
 # ── 예수금 (asset_type=CASH, product_code=DEPOSIT[_통화]) ──

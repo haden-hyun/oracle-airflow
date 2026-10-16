@@ -86,6 +86,7 @@ airflow/
 
 - 대상: 해외·국내주식, RP/발행어음, ISA, 연금저축, CMA, 암호화폐, IRP, DC, 적금, 주택청약
 - 매일 T-1 기준 자산 현황 → `account.asset_daily`, 보유 상품 시세 → `market.product_price_daily`, 배당 → `market.dividend_event`·`account.dividend_receipt`
+- 시장 기준 데이터(보유와 무관): 환율 → `market.exchange_rate_daily`, 펀드 기준가 → `market.fund_price_daily`, 주요 지수 → `market.index_daily`
 
 ## 스케줄 (KST)
 
@@ -93,8 +94,8 @@ airflow/
 06:00  market_ingest_trading_holiday          (독립, 변경 없으면 skip)
 06:50  auth_issue_api_tokens                  ← KIS 토큰 발급은 여기서만
          │ 센서: 유효 토큰
-06:55  market_ingest_exchange_rate_daily · market_ingest_fund_price_daily (KOFIA, 없으면 fundguide)
-         │ 센서: 기준일 환율 4종 · 필요 펀드 기준가
+06:55  market_ingest_reference_daily          [exchange_rate] [fund_price] [market_index] — 그룹끼리 독립
+         │ 센서: 기준일 환율 4종 · 필요 펀드 기준가 (지수는 하류 센서 없음)
 07:00  account_ingest_asset_daily
          collect_account × 활성 계좌 → refresh_dashboard_views
          │ 센서: T-1 asset_daily (데이터 존재)
@@ -108,13 +109,29 @@ airflow/
 |---|---|---|---|
 | `market_ingest_trading_holiday` | 06:00 | `market.trading_holiday` | 평일 휴장일 3년치, `is_manual` 보호, 변경 시 알림 |
 | `auth_issue_api_tokens` | 06:50 | `data/tokens/tokens.json` | 활성 계좌·services 참조 KIS 키만 발급, 지문 변경 키만 재발급 / 키 만료 알림 D-14·D-7·D-3~ |
-| `market_ingest_exchange_rate_daily` | 06:55 | `market.exchange_rate_daily` | USD·JPY·GBP·EUR |
-| `market_ingest_fund_price_daily` | 06:55 | `market.fund_price_daily` | KOFIA 기준가(T-1 이하 최신 = 휴일 이월), 없거나 지연된 코드만 fundguide 크롤링, 누락 시 실패·알림, 전환 검증 기간 크롤러 대조 |
+| `market_ingest_reference_daily` | 06:55 | `market.exchange_rate_daily` · `market.fund_price_daily` · `market.index_daily` | 시장 기준 데이터 TaskGroup 3개 (아래 표) |
 | `account_ingest_asset_daily` | 07:00 | `account.asset_daily` | 계좌당 1 태스크, 0건이면 DELETE 전 실패(기존분 보존) |
 | `market_ingest_product_price_daily` | 07:10 | `market.product` · `market.product_price_daily` · `market.fund_price_daily`(빈 날짜) | 원주가 1년 유지, 빈 구간 + 최근 5거래일 재수집, 추적 종목 3거래일 지연 시 실패 |
 | `account_ingest_dividend` | 07:20 | `market.dividend_event` · `account.dividend_receipt` | 일정 T−400~+60(국내)/+120(미국)·원장 T−100, UPSERT(DELETE 없음), 미국은 추정 원장(원천징수 15%) |
 | `account_upsert_manual_position_ledger` | 수동 | `account.manual_position_ledger` | 수기 원장 입력 → 해당 계좌 재계산 |
 | `account_rebuild_ledger_assets` | 수동 | `account.asset_daily` | 수기 계좌 기간 재계산 (`end_date` 비우면 최종 계산일) |
+
+### 기준 데이터 DAG `market_ingest_reference_daily` (06:55)
+
+| 그룹 | 적재 | 내용 |
+|---|---|---|
+| `exchange_rate` | `market.exchange_rate_daily` | USD·JPY·GBP·EUR T-1, 달력일(주말·휴일 = 직전 고시). GBP·EUR 은 달러 기준 → 원/달러로 교차 환산 |
+| `fund_price` | `market.fund_price_daily` | KOFIA 기준가(T-1 이하 최신 = 휴일 이월), 없거나 지연된 코드만 fundguide, 누락 시 실패·알림, 전환 검증 기간 크롤러 대조 |
+| `market_index` | `market.index_daily` | 코스피·코스닥(FHKUP03500100) · S&P 500·나스닥 종합(FHKST03030100 `N`) 일봉, 거래일만, 최근 5거래일 재수집, 신규면 `reference_ingest.market_index.from_date` 부터 |
+
+- 그룹 사이 의존 없음 — 한 그룹 실패가 다른 그룹을 막지 않음 (run 은 실패 표시). 공통 선행은 `wait_for_token` (환율·지수만)
+- 늦은 정기 run skip: 환율·펀드만 (현재값 API). 지수는 이력 API 라 skip 없음
+- 지수 US 상한 = 뉴욕 16:30 이 지난 마지막 날짜 (장중 수동 run 이 확정 전 값을 넣지 않게). 창 끝 거래일 행이 없으면 실패·재시도
+- KIS 기간 조회(FHKST03030100)는 1회 100행이면서 **요청 구간의 한국 영업일 수**만큼만 준다 → `get_chart_history` 가 끝 날짜를 당겨 반복 (국내 업종은 50행)
+- 수동 Param: `groups`(실행할 그룹) · `start_date`/`end_date` · `extra_fund_codes`
+  - 환율 백필: `groups=[exchange_rate]`, `start_date` 지정 → 이력 → 달력일 이월 → **빈 날만** INSERT (매일 경로는 skip). 끝나면 `CALL dashboard.refresh_views()`
+  - 지수 재수집: `groups=[market_index]`, `start_date`/`end_date` → upsert
+- 지수 MV 갱신: `reference_ingest.market_index.refresh_dashboard_views` (현재 false → skip)
 
 ### 시세 DAG `market_ingest_product_price_daily` (07:10)
 
@@ -128,7 +145,7 @@ airflow/
 
 ### 펀드 기준가 (KOFIA 일원화, 2026-10-14)
 
-| | 06:55 `market_ingest_fund_price_daily` | 07:10 시세 DAG `ingest_fund_nav` |
+| | 06:55 `market_ingest_reference_daily` `fund_price` | 07:10 시세 DAG `ingest_fund_nav` |
 |---|---|---|
 | 역할 | **자산 평가 입력 (T-1)** | 과거 빈 날짜 보충 (시세 드로어) |
 | 주 경로 | KOFIA 전자공시 XML (인증 없음, 기간 조회) | KOFIA |
@@ -158,16 +175,16 @@ airflow/
 
 | 센서 최대 대기 | DAG |
 |---|---|
-| 10분 | `market_ingest_exchange_rate_daily` · `account_ingest_asset_daily` |
+| 10분 | `market_ingest_reference_daily` · `account_ingest_asset_daily` |
 | 30분 | `market_ingest_product_price_daily` · `account_ingest_dividend` |
 
 - 지연 정기 run (3시간 초과) → 수집 skip (현재값 API 가 과거 기준일을 덮지 않게)
-  - 시세·배당 DAG 는 예외 — 이력 API 라 skip 없음
+  - 시세·배당 DAG · 기준 데이터 `market_index` 그룹은 예외 — 이력 API 라 skip 없음
 - KIS 토큰 발급은 `auth_issue_api_tokens` 만, 그것도 `TOKEN_ISSUE_ENABLED=true` 일 때만
-  - 시세·배당 DAG 는 발급 안 함 (`TokenManager.existing_token`), 토큰 없으면 센서 대기 → 실패·알림
-  - 시세·배당 일정은 `services.exchange_rate_credential` 키, 배당 원장은 각 계좌 키 사용
+  - 기준 데이터·시세·배당 DAG 는 발급 안 함, 토큰 없으면 센서 대기 → 실패·알림
+  - 환율·지수·시세·배당 일정은 `services.exchange_rate_credential` 키, 배당 원장은 각 계좌 키 사용
 - MV 갱신 `CALL dashboard.refresh_views()`: 자산·수기 DAG 마지막 태스크 (일부 실패해도 갱신, run 은 실패 유지)
-  - 시세 DAG 는 갱신 안 함, 배당 DAG 는 config 스위치
+  - 시세 DAG · 기준 데이터 환율·펀드는 갱신 안 함, 배당 DAG · 지수 그룹은 config 스위치
 - 적재 테이블 = Airflow Asset `outlets` (계보·이력 표시 전용, 스케줄 미사용)
 - 알림: 태스크 최종 실패 시 Discord, 직전 run 실패였으면 복구 알림
   - 본문의 키·계좌번호는 `alerts.redact` 로 가림 (DB DETAIL·HTTP URL 포함)

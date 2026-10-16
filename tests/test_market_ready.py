@@ -110,7 +110,7 @@ def test_required_fund_codes_only_nav_accounts(cfg, app):
     assert set(need) <= set(dp.fund_codes_to_crawl(cfg, app))
 
 
-@pytest.mark.parametrize("dag_file", ["account_ingest_asset_daily", "market_ingest_exchange_rate_daily"])
+@pytest.mark.parametrize("dag_file", ["account_ingest_asset_daily", "market_ingest_reference_daily"])
 def test_no_time_coupled_external_sensor(dag_file):
     # 상류 run 시각(execution_delta) 결합 금지 → 수동 재실행에서도 센서가 동작해야 함
     src = (Path(__file__).resolve().parents[1] / "dags" / f"{dag_file}.py").read_text(encoding="utf-8")

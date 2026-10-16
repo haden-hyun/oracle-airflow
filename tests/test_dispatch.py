@@ -296,6 +296,7 @@ def test_exchange_rate_cross_conversion():
     rates = dict(zip(df["currency_code"], df["base_rate"], strict=True))
     assert rates == {"USD": 1400.0, "JPY": 9.5, "GBP": 1750.0, "EUR": pytest.approx(1540.0)}
     assert set(df["currency_pair_name"]) == {"원/달러", "원/엔", "원/파운드", "원/유로"}
+    assert set(df["source"]) == {"KIS_FX_DAILY"} and "source_symbol" in df and "symbol" not in df
 
 
 def test_collect_account_guard_blocks_before_api(deps, monkeypatch):

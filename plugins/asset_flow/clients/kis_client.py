@@ -8,6 +8,7 @@
 - 공통: _request(단건, rt_cd 검사·간격 유지) / _get_pages(tr_cont 연속조회) — 배당·시세 전용 (잔고·환율은 safe_request 직접)
 - 배당: get_ksd_dividend / get_period_rights / get_overseas_period_rights / get_overseas_rights_ice (원시 행)
 - 시세: get_domestic_daily_price / get_overseas_daily_price (원주가, 100행씩 날짜를 당겨 반복)
+- 지수·환율 기간: get_chart_history (국내 업종 · 해외 지수 · 환율 output2, 끝 날짜를 당겨 반복)
 - 계좌번호가 응답 본문(ctx_area_*·acno10)에 평문으로 올 수 있음 → _redact 로 실패 로그·예외에서 가림
 """
 
@@ -320,6 +321,41 @@ class KISApiClient(BaseApiClient):
                 break
             cur = _prev_day(min(r["stck_bsop_date"] for r in page))
         return rows
+
+    def get_chart_history(self, name: str, code: str, start: str, end: str) -> list[dict]:
+        """
+        Purpose: 지수·환율 기간 일봉 (FHKUP03500100 · FHKST03030100 output2) — 끝 날짜를 받은 최소일 −1 로 당겨 반복
+        Parameter:
+            - name: KIS.PATHS 키 (domestic_index_daily | overseas_index_daily | exchange_rate)
+            - code: FID_INPUT_ISCD (0001 · SPX · FX@KRWKFTC)
+            - start: 기간 시작 YYYYMMDD (포함)
+            - end: 기간 끝 YYYYMMDD (포함)
+        Input: KIS API
+        Output: start~end output2 원시 행 (최근→과거, 날짜 중복 없음). 잘못된 코드는 [] (API 가 에러를 주지 않음).
+                KIS.MAX_PAGES 번 안에 start 에 닿지 못하거나 중간에 빈 응답이면 RuntimeError (조용히 잘린 이력 방지)
+        """
+        # 응답 행 수가 '요청 구간의 한국 영업일 수'로도 잘림 → 시작일 앞을 더 요청해 구간 끝 연휴에도 행이 오게
+        query_start = (dt.datetime.strptime(start, "%Y%m%d")
+                       - dt.timedelta(days=KIS.CHART_QUERY_PAD_DAYS)).strftime("%Y%m%d")
+        rows, cur = {}, end
+        for _ in range(KIS.MAX_PAGES):
+            params = {**KIS.PARAMS[name], "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": query_start,
+                      "FID_INPUT_DATE_2": cur}
+            page = [r for r in self._request(name, params)[0].get("output2") or [] if r.get("stck_bsop_date")]
+            if not page:
+                if rows:      # 이미 받은 뒤 빈 페이지 = 중간 유실 (패딩 14일 안에 행이 하나도 없음) → 조용히 잘리지 않게
+                    raise RuntimeError(f"KIS {KIS.TR_IDS[name]} {code}: {cur} 이전 빈 응답 — 이력이 {min(rows)} 에서 끊김")
+                break
+            for r in page:
+                if start <= r["stck_bsop_date"] <= cur:
+                    rows.setdefault(r["stck_bsop_date"], r)
+            oldest = min(r["stck_bsop_date"] for r in page)
+            if oldest <= start:
+                break
+            cur = _prev_day(oldest)
+        else:
+            raise RuntimeError(f"KIS {KIS.TR_IDS[name]} {code} {start}~{end}: {KIS.MAX_PAGES}회 안에 시작일에 닿지 못함")
+        return [rows[d] for d in sorted(rows, reverse=True)]
 
     def get_overseas_daily_price(self, excd: str, symbol: str, start: str, end: str) -> list[dict]:
         """

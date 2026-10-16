@@ -2,10 +2,11 @@
 한국투자증권(KIS) OpenAPI 상수
 
 - PATHS·TR_IDS·PARAMS: 엔드포인트·거래 ID·고정 쿼리
-- EXCHANGE_RATE_PRODUCT_CODES, ACCOUNT_BALANCE_ROW_NAMES(CTRP6548R 행 순서)
+- EXCHANGE_RATE_PRODUCT_CODES·EXCHANGE_RATE_PAIRS, ACCOUNT_BALANCE_ROW_NAMES(CTRP6548R 행 순서)
 - 공통 헤더·연속조회: CUSTTYPE, REQUEST_INTERVAL, CONTINUE_CODES, MAX_PAGES (_request 경로 전용)
 - 배당: DIVIDEND_RIGHT_TYPES, OVERSEAS_PRDT_TYPE, US_DIVIDEND_RIGHTS, ICE_DIVIDEND_TITLES
 - 시세: PRICE_PAGE_SIZE, OVERSEAS_PRICE_EXCD
+- 지수·환율 기간 조회: MARKET_INDEXES, INDEX_SOURCES, CHART_QUERY_PAD_DAYS
 """
 
 class KIS:
@@ -20,6 +21,10 @@ class KIS:
         "account_balance": "/uapi/domestic-stock/v1/trading/inquire-account-balance",
         # API명: 해외주식 종목/지수/환율기간별시세[v1_해외주식-012] → 환율 조회용
         "exchange_rate": "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice",
+        # API명: 해외주식 종목/지수/환율기간별시세[v1_해외주식-012] → 미국 지수 일봉 (환율과 같은 API, 시장 구분 N)
+        "overseas_index_daily": "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice",
+        # API명: 국내주식업종기간별시세(일/주/월/년) [국내주식] 업종/기타 → 코스피·코스닥 일봉 (1회 50행)
+        "domestic_index_daily": "/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice",
         # API명: 주식잔고조회[v1_국내주식-006] → 국내주식 잔고 조회용
         "domestic_balance": "/uapi/domestic-stock/v1/trading/inquire-balance",
         # API명: 해외주식 잔고조회[v1_해외주식-006] → 해외주식 잔고 조회용
@@ -42,6 +47,8 @@ class KIS:
 
     TR_IDS: dict[str, str] = {
         "exchange_rate": "FHKST03030100",
+        "overseas_index_daily": "FHKST03030100",
+        "domestic_index_daily": "FHKUP03500100",
         "domestic_balance": "TTTC8434R",
         "overseas_balance": "TTTS3012R",
         "account_balance": "CTRP6548R",
@@ -61,6 +68,14 @@ class KIS:
         },
         "exchange_rate": {
             "FID_COND_MRKT_DIV_CODE": "X",
+            "FID_PERIOD_DIV_CODE": "D",
+        },
+        "overseas_index_daily": {
+            "FID_COND_MRKT_DIV_CODE": "N",        # N = 해외지수 (환율은 X)
+            "FID_PERIOD_DIV_CODE": "D",
+        },
+        "domestic_index_daily": {
+            "FID_COND_MRKT_DIV_CODE": "U",        # U = 업종
             "FID_PERIOD_DIV_CODE": "D",
         },
         "overseas_balance": {
@@ -108,6 +123,9 @@ class KIS:
     }
 
     EXCHANGE_RATE_PRODUCT_CODES: list[str] = ["FX@KRWKFTC", "FX@KRWJS", "FX@GBP", "FX@EUR"]
+    # 기간 조회(output2)엔 통화쌍 이름이 없음 → 심볼로 채움. 달러/… 는 원/달러로 교차 환산 대상
+    EXCHANGE_RATE_PAIRS: dict[str, str] = {"FX@KRWKFTC": "원/달러", "FX@KRWJS": "원/엔",
+                                           "FX@GBP": "달러/파운드", "FX@EUR": "달러/유로"}
 
     # 투자계좌자산현황 응답의 행 순서 (API가 인덱스 없이 순서로 반환)
     ACCOUNT_BALANCE_ROW_NAMES: list[str] = [
@@ -151,3 +169,12 @@ class KIS:
     # ── 시세 ──
     PRICE_PAGE_SIZE: int = 100                # 국내·해외 일봉 1회 최대 행
     OVERSEAS_PRICE_EXCD: dict[str, str] = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}  # asset_daily.exchange_code → 시세 EXCD
+
+    # ── 지수·환율 기간 조회 (FHKUP03500100 · FHKST03030100 output2) ──
+    # index_daily.index_code → (시장, KIS FID_INPUT_ISCD). 잘못된 코드도 rt_cd=0 + 0행 (2026-10-17 실조회 확인)
+    MARKET_INDEXES: dict[str, tuple[str, str]] = {"KOSPI": ("KR", "0001"), "KOSDAQ": ("KR", "1001"),
+                                                  "SPX": ("US", "SPX"), "COMP": ("US", "COMP")}
+    INDEX_SOURCES: dict[str, str] = {"KR": "KIS_KR_INDEX", "US": "KIS_US_INDEX"}
+    # 1회 응답 상한: 국내 업종 50행, FHKST03030100 은 100행이면서 '요청 구간의 한국 영업일 수'만큼 (최근 쪽만 남김)
+    # → 끝 날짜를 받은 최소일 −1 로 당겨 반복하고, 시작일 앞을 이만큼 더 요청해 구간 끝의 한국 연휴에도 행이 오게 함
+    CHART_QUERY_PAD_DAYS: int = 14

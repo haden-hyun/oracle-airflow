@@ -102,9 +102,10 @@ def test_compare_sources():
 def test_fund_dag_structure():
     from test_finalize import _load_dag
 
-    t = _load_dag("market_ingest_fund_price_daily").task_dict
-    assert "crawl_fund_prices" not in t
-    assert t["upload_fund_prices"].upstream_task_ids == {"get_standard_date", "collect_fund_prices"}
-    assert t["compare_with_fundguide"].upstream_task_ids == {"get_standard_date", "collect_fund_prices",
-                                                             "upload_fund_prices"}
-    assert t["check_fund_coverage"].upstream_task_ids >= {"upload_fund_prices"}
+    t = _load_dag("market_ingest_reference_daily").task_dict
+    g = "fund_price."
+    assert g + "crawl_fund_prices" not in t
+    assert t[g + "upload_fund_prices"].upstream_task_ids == {g + "get_standard_date", g + "collect_fund_prices"}
+    assert t[g + "compare_with_fundguide"].upstream_task_ids == {g + "get_standard_date", g + "collect_fund_prices",
+                                                                 g + "upload_fund_prices"}
+    assert t[g + "check_fund_coverage"].upstream_task_ids >= {g + "upload_fund_prices"}

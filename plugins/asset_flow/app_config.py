@@ -4,13 +4,14 @@
 - 진입점: load_app_config() → AppConfig (pydantic strict, frozen)
 - 경로: env ASSET_FLOW_CONFIG (기본 /opt/airflow/dags/config/asset_flow.yaml)
 - 내용: 적재 테이블, 펀드코드, 수기 계좌 유형별 product_code·multiplier, 만료 알림 규칙, 대시보드 갱신 프로시저,
-        시세 수집(price_ingest), 배당 수집(dividend)
+        시세 수집(price_ingest), 배당 수집(dividend), 기준 데이터 수집(reference_ingest)
 - yaml 과 이 모델은 같은 커밋으로 배포 (extra=forbid — 한쪽만 바뀌면 모든 DAG 의 설정 로드 실패)
 """
 
 from __future__ import annotations
 
 import os
+from datetime import date
 from pathlib import Path
 
 import yaml
@@ -36,6 +37,7 @@ class Tables(_Strict):
     product_price_daily: Table
     dividend_event: Table
     dividend_receipt: Table
+    index_daily: Table
 
 
 class Funds(_Strict):
@@ -88,6 +90,16 @@ class Dividend(_Strict):
     refresh_dashboard_views: bool = False       # true 면 마지막에 대시보드 MV 갱신
 
 
+class MarketIndexIngest(_Strict):
+    from_date: date                                     # 신규 지수 첫 적재일 (백필 시작)
+    refetch_trading_days: int = Field(ge=1, le=30)      # 매일 재수집 거래일 수
+    refresh_dashboard_views: bool = False               # true 면 그룹 끝에 대시보드 MV 갱신 (MV 가 지수를 쓰게 되면)
+
+
+class ReferenceIngest(_Strict):
+    market_index: MarketIndexIngest
+
+
 class AppConfig(_Strict):
     tables: Tables
     funds: Funds
@@ -96,6 +108,7 @@ class AppConfig(_Strict):
     dashboard: Dashboard
     price_ingest: PriceIngest
     dividend: Dividend
+    reference_ingest: ReferenceIngest
 
 
 def load_app_config(path: str | os.PathLike | None = None) -> AppConfig:

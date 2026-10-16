@@ -17,6 +17,7 @@ PRODUCT = Asset("market.product", uri="asset://market/product", group="market")
 PRODUCT_PRICE = Asset("market.product_price_daily", uri="asset://market/product_price_daily", group="market")
 DIVIDEND_EVENT = Asset("market.dividend_event", uri="asset://market/dividend_event", group="market")
 DIVIDEND_RECEIPT = Asset("account.dividend_receipt", uri="asset://account/dividend_receipt", group="account")
+MARKET_INDEX = Asset("market.index_daily", uri="asset://market/index_daily", group="market")
 MANUAL_LEDGER = Asset("account.manual_position_ledger", uri="asset://account/manual_position_ledger", group="account")
 
 

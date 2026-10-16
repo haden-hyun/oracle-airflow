@@ -14,14 +14,16 @@ def test_asset_names_match_config_tables(app):
     assert a.ASSET_DAILY.name == f"{t.asset_daily.db_schema}.{t.asset_daily.table_name}"
     assert a.EXCHANGE_RATE.name == f"{t.exchange_rate_daily.db_schema}.{t.exchange_rate_daily.table_name}"
     assert a.FUND_PRICE.name == f"{t.fund_price_daily.db_schema}.{t.fund_price_daily.table_name}"
-    for asset, table in [(a.PRODUCT, t.product), (a.PRODUCT_PRICE, t.product_price_daily),
+    for asset, table in [(a.PRODUCT, t.product), (a.PRODUCT_PRICE, t.product_price_daily), (a.MARKET_INDEX, t.index_daily),
                          (a.DIVIDEND_EVENT, t.dividend_event), (a.DIVIDEND_RECEIPT, t.dividend_receipt)]:
         assert asset.name == f"{table.db_schema}.{table.table_name}"
 
 
 @pytest.mark.parametrize("dag_file,asset,task_id", [
-    ("market_ingest_exchange_rate_daily", "EXCHANGE_RATE", "upload_exchange_rates"),
-    ("market_ingest_fund_price_daily", "FUND_PRICE", "upload_fund_prices"),
+    ("market_ingest_reference_daily", "EXCHANGE_RATE", "upload_exchange_rates"),
+    ("market_ingest_reference_daily", "EXCHANGE_RATE", "backfill_exchange_rates"),
+    ("market_ingest_reference_daily", "FUND_PRICE", "upload_fund_prices"),
+    ("market_ingest_reference_daily", "MARKET_INDEX", "upload_index_prices"),
     ("account_ingest_asset_daily", "ASSET_DAILY", "collect_account"),
     ("account_rebuild_ledger_assets", "ASSET_DAILY", "rebuild_account"),
     ("account_upsert_manual_position_ledger", "MANUAL_LEDGER", "upsert"),
@@ -38,7 +40,7 @@ def test_asset_names_match_config_tables(app):
 def test_writer_task_declares_outlet_and_marks(dag_file, asset, task_id):
     # 쓰기 태스크마다 outlets 선언 + 이벤트 메모 첨부
     src = (DAGS / f"{dag_file}.py").read_text(encoding="utf-8")
-    block = re.search(rf'task_id="{task_id}".*?(?=\n    @task|\n    [a-z_]+ = |\Z)', src, re.S).group(0)
+    block = re.search(rf'task_id="{task_id}".*?(?=task_id=|\Z)', src, re.S).group(0)
     assert f"outlets=[{asset}]" in block and f"mark({asset}," in block
 
 

@@ -6,6 +6,7 @@
 - BALANCE_COLUMNS / EXCHANGE_RATE_COLUMNS: DataFrame 컬럼 순서
 - DividendEventRecord / DividendReceiptRecord (+ _COLUMNS·_PK): market.dividend_event / account.dividend_receipt
 - PRICE_RENAME, PriceRecord / FundPriceRecord (+ _COLUMNS): market.product_price_daily / fund_price_daily
+- CHART_RENAME, IndexRecord (+ INDEX_COLUMNS): 지수·환율 기간 조회(output2) / market.index_daily
 """
 
 import datetime as dt
@@ -26,7 +27,7 @@ KIS_RENAME: dict[str, dict[str, str]] = {
         "acml_vol": "total_volume",  # 누적거래량
         "hts_kor_isnm": "currency_pair_name",  # 통화쌍 이름
         "ovrs_nmix_prpr": "base_rate",  # 매매기준율
-        "stck_shrn_iscd": "symbol",  # 심볼
+        "stck_shrn_iscd": "source_symbol",  # 심볼 (KIS 조회 키)
         "prdy_vol": "previous_day_volume",  # 전일 거래량
         "ovrs_prod_oprc": "opening_price",  # 시가
         "ovrs_prod_hgpr": "highest_price",  # 최고가
@@ -89,7 +90,7 @@ class BalanceRecord(TypedDict):
 
 class ExchangeRateRecord(TypedDict):
     standard_date: str
-    symbol: str
+    source_symbol: str
     currency_code: str
     currency_pair_name: str
     base_rate: float
@@ -97,6 +98,7 @@ class ExchangeRateRecord(TypedDict):
     opening_price: float
     highest_price: float
     lowest_price: float
+    source: str                     # KIS_FX_DAILY
 
 
 class DividendEventRecord(TypedDict):
@@ -173,6 +175,43 @@ class PriceRecord(TypedDict):
     source: str
 
 
+# ── 지수·환율 기간 조회(output2) 필드 → 적재 컬럼 ──
+CHART_RENAME: dict[str, dict[str, str]] = {
+    "domestic_index_daily": {
+        "stck_bsop_date": "standard_date",  # 영업일자 YYYYMMDD
+        "bstp_nmix_oprc": "opening_price",  # 업종 지수 시가
+        "bstp_nmix_hgpr": "highest_price",  # 고가
+        "bstp_nmix_lwpr": "lowest_price",   # 저가
+        "bstp_nmix_prpr": "closing_price",  # 종가 (현재가)
+    },
+    "overseas_index_daily": {
+        "stck_bsop_date": "standard_date",  # 현지 영업일자 YYYYMMDD
+        "ovrs_nmix_oprc": "opening_price",
+        "ovrs_nmix_hgpr": "highest_price",
+        "ovrs_nmix_lwpr": "lowest_price",
+        "ovrs_nmix_prpr": "closing_price",
+    },
+    "exchange_rate": {                      # 환율 이력 — 종가가 매매기준율
+        "stck_bsop_date": "standard_date",
+        "ovrs_nmix_oprc": "opening_price",
+        "ovrs_nmix_hgpr": "highest_price",
+        "ovrs_nmix_lwpr": "lowest_price",
+        "ovrs_nmix_prpr": "base_rate",
+    },
+}
+
+
+class IndexRecord(TypedDict):
+    standard_date: str
+    index_code: str                 # KOSPI | KOSDAQ | SPX | COMP
+    market: str                     # KR | US
+    opening_price: float | None
+    highest_price: float | None
+    lowest_price: float | None
+    closing_price: float
+    source: str                     # KIS_KR_INDEX | KIS_US_INDEX
+
+
 class FundPriceRecord(TypedDict):
     standard_date: str
     product_code: str
@@ -189,3 +228,4 @@ DIVIDEND_EVENT_PK: list[str] = ["product_code", "record_date", "dividend_type"]
 DIVIDEND_RECEIPT_PK: list[str] = ["account_code", "product_code", "record_date", "right_type_code"]
 PRICE_COLUMNS: list[str] = list(PriceRecord.__annotations__.keys())
 FUND_PRICE_COLUMNS: list[str] = list(FundPriceRecord.__annotations__.keys())
+INDEX_COLUMNS: list[str] = list(IndexRecord.__annotations__.keys())
