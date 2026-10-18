@@ -2,8 +2,8 @@ from datetime import date
 
 import pytest
 
-from asset_flow.pipeline.price_plan import (Window, plan_product, plan_window, recent_start, stale_products,
-                                            validate_coverage)
+from asset_flow.pipeline.price_plan import (Window, fund_window_needed, plan_product, plan_window, recent_start,
+                                            stale_products, validate_coverage)
 
 HOL = {"KR": {date(2026, 10, 5), date(2026, 10, 9)}, "US": set()}
 BASE = date(2026, 10, 13)
@@ -93,3 +93,16 @@ def test_stale_products():
         _p(product_code="OLD", is_tracked=False),                                 # 추적 해제
     ]
     assert stale_products(targets, end, HOL) == ["161510(2026-10-02)"]
+
+
+def test_fund_window_skipped_when_no_trading_day_missing():
+    w = Window("K553W5E17401", "2026-10-02", "2026-10-12", False)
+    full = {date(2026, 10, d) for d in range(2, 13)}
+    assert not fund_window_needed(w, full, HOL["KR"])
+    weekdays_only = full - {date(2026, 10, 3), date(2026, 10, 4), date(2026, 10, 5), date(2026, 10, 9)}
+    assert not fund_window_needed(w, weekdays_only, HOL["KR"])         # 주말·KR 휴장일 빈 칸은 KOFIA 로 못 채움
+    assert fund_window_needed(w, full - {date(2026, 10, 8)}, HOL["KR"])  # 평일 빈 날 → 수집
+
+
+def test_fund_window_new_is_always_needed():
+    assert fund_window_needed(Window("K553W5E17401", "2025-10-13", "2026-10-12", True), set(), HOL["KR"])

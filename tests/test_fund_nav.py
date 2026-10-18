@@ -1,6 +1,7 @@
 import datetime as dt
 
-from asset_flow.pipeline.fund_nav import collect_fund_prices, compare_sources, expected_nav_date, nav_for_date
+from asset_flow.pipeline.fund_nav import (collect_fund_prices, compare_sources, expected_nav_date, fetch_all,
+                                         nav_for_date)
 
 D = dt.date
 HOL = {D(2026, 10, 5), D(2026, 10, 9), D(2025, 12, 31)}          # 대체공휴일 · 한글날 · KRX 연말휴장
@@ -109,3 +110,87 @@ def test_fund_dag_structure():
     assert t[g + "compare_with_fundguide"].upstream_task_ids == {g + "get_standard_date", g + "collect_fund_prices",
                                                                  g + "upload_fund_prices"}
     assert t[g + "check_fund_coverage"].upstream_task_ids >= {g + "upload_fund_prices"}
+
+
+def test_kofia_client_uses_long_timeout(monkeypatch):
+    # 비브라우저 UA 는 응답 ~105초 지연·Python UA 는 무응답 (2026-10 실측) — 긴 timeout + 브라우저 UA
+    from types import SimpleNamespace
+
+    from asset_flow.clients.kofia_client import KofiaClient
+    from asset_flow.config.kofia import KOFIA
+
+    seen = {}
+    xml = (b"<message><selectMeta><tmpV1>20261016</tmpV1><tmpV2>1692.99</tmpV2>"
+           b"<tmpV12>K55105D43299</tmpV12></selectMeta></message>")
+
+    def fake(method, url, **kw):
+        """
+        Purpose: requests.request 대역 (인자 기록)
+        Parameter:
+            - method / url / kw: requests 인자
+        Input: 없음
+        Output: 고정 XML 응답
+        """
+        seen.update(kw)
+        return SimpleNamespace(content=xml, raise_for_status=lambda: None)
+
+    monkeypatch.setattr("asset_flow.clients.base_client.requests.request", fake)
+    rows = KofiaClient().get_fund_nav_history("K55105D43299", "20261012", "20261017", interval=0)
+    assert rows == [{"standard_date": "20261016", "standard_price": "1692.99"}]
+    assert seen["timeout"] == KOFIA.TIMEOUT and KOFIA.TIMEOUT[1] >= 150
+    assert "python" not in seen["headers"]["User-Agent"].lower()            # Python 기본 UA 는 서버가 끊음
+
+
+def test_fetch_all_runs_concurrently_and_isolates_errors():
+    import threading
+
+    gate = threading.Barrier(3, timeout=5)                  # 3개가 동시에 들어와야 통과 (순차면 BrokenBarrierError)
+
+    def fetch(key):
+        """
+        Purpose: 동시성 확인용 조회 대역
+        Parameter:
+            - key: 키 (C 는 실패)
+        Input: 없음
+        Output: 키 소문자 (C 는 ConnectionError)
+        """
+        gate.wait()
+        if key == "C":
+            raise ConnectionError("down")
+        return key.lower()
+
+    got = fetch_all(fetch, ["A", "B", "C"], workers=3)
+    assert got["A"] == "a" and got["B"] == "b" and isinstance(got["C"], ConnectionError)
+    assert fetch_all(fetch, []) == {}
+
+
+def test_ingest_fund_nav_fetches_in_parallel(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    from asset_flow import db_manager as db
+    from asset_flow.pipeline import price_plan
+    from asset_flow.pipeline.price_plan import Window, ingest_source
+
+    gate = threading.Barrier(2, timeout=5)
+
+    def fetch(p, s, e, i):
+        """
+        Purpose: KOFIA 조회 대역 (2개가 동시에 들어와야 통과, B 는 실패)
+        Parameter:
+            - p / s / e / i: 상품 · 시작 · 끝 · 간격
+        Input: 없음
+        Output: 기준가 행
+        """
+        gate.wait()
+        if p["product_code"] == "B":
+            raise ConnectionError("down")
+        return [{"standard_date": "20261016", "standard_price": "1692.99"}]
+
+    inserted = []
+    monkeypatch.setattr(price_plan, "_fetcher", lambda source, deps: fetch)
+    monkeypatch.setattr(db, "insert_missing_fund_prices", lambda engine, recs: inserted.extend(recs) or len(recs))
+    products = [{"product_code": c, "product_name": c} for c in ("A", "B")]
+    windows = [Window(c, "2026-10-12", "2026-10-17", False) for c in ("A", "B")]
+    res = ingest_source("FUND_NAV", products, windows, SimpleNamespace(engine=None), 0)
+    assert res["rows"] == 1 and list(res["failed"]) == ["B"] and inserted[0]["product_code"] == "A"

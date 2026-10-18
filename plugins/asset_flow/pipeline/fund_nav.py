@@ -2,7 +2,8 @@
 펀드 기준가 수집 (market_ingest_reference_daily fund_price 그룹 본체) — KOFIA 주 경로 + fundguide 크롤러 대체 경로
 
 - nav_for_date: KOFIA 기준일 이력 → 기준일 값 (T-1 이하 최신 기준가 = 주말·휴일 이월, 지연이면 None)
-- collect_fund_prices: 코드별 KOFIA 조회 → 빠진 코드만 크롤러 (config funds.crawler_fallback)
+- fetch_all: KOFIA 조회 병렬 실행 (응답 지연이 생겨도 펀드 수만큼 늘지 않게)
+- collect_fund_prices: 코드별 KOFIA 조회(병렬) → 빠진 코드만 크롤러 (config funds.crawler_fallback)
 - compare_sources: KOFIA 적재값 ↔ 크롤러 값 대조 (config funds.shadow_compare, 전환 검증 기간용)
 """
 
@@ -10,6 +11,9 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from concurrent.futures import ThreadPoolExecutor
+
+from asset_flow.config.kofia import KOFIA
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +57,39 @@ def nav_for_date(rows: list[dict], standard_date: dt.date, holidays: set[dt.date
     return price, nav_date
 
 
+def fetch_all(fetch, keys: list, workers: int = KOFIA.MAX_WORKERS) -> dict:
+    """
+    Purpose: 조회 함수를 키마다 병렬 실행 (KOFIA 동시 요청은 각각 처리됨 — 실측)
+    Parameter:
+        - fetch: key → 결과 함수
+        - keys: 조회 키 리스트 (hashable, 중복 없음)
+        - workers: 동시 요청 상한
+    Input: 외부 API (fetch 가 호출)
+    Output: {key: 결과 또는 발생한 Exception} — 예외는 호출자가 키 단위로 처리
+    """
+    def run(key):
+        """
+        Purpose: 키 1개 조회 (예외를 값으로 돌려 다른 키에 영향 없게)
+        Parameter:
+            - key: 조회 키
+        Input: fetch
+        Output: 결과 또는 Exception
+        """
+        try:
+            return fetch(key)
+        except Exception as e:                    # noqa: BLE001 — 키 단위 격리, 호출자에게 그대로 넘김
+            return e
+
+    if not keys:
+        return {}
+    pool = ThreadPoolExecutor(max_workers=max(1, min(workers, len(keys))))
+    try:
+        futures = [pool.submit(run, k) for k in keys]
+        return {k: f.result() for k, f in zip(keys, futures)}
+    finally:                                      # 태스크 중단(BaseException) 시 대기 중 요청은 버림
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def collect_fund_prices(codes: list[str], standard_date: str, names: dict[str, str], holidays: set[dt.date],
                         kofia, crawl=None) -> tuple[list[dict], dict[str, str]]:
     """
@@ -70,9 +107,12 @@ def collect_fund_prices(codes: list[str], standard_date: str, names: dict[str, s
     std = dt.date.fromisoformat(standard_date)
     start = (std - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
     records, source, missing = [], {}, []
+    fetched = fetch_all(lambda c: kofia.get_fund_nav_history(c, start, std.strftime("%Y%m%d")), codes)
     for code in codes:
         try:
-            hit = nav_for_date(kofia.get_fund_nav_history(code, start, std.strftime("%Y%m%d")), std, holidays)
+            if isinstance(fetched[code], Exception):
+                raise fetched[code]
+            hit = nav_for_date(fetched[code], std, holidays)
         except Exception as e:                    # noqa: BLE001 — 코드 단위 격리, 대체 경로로 넘김
             log.warning("[KOFIA] %s 조회 실패: %s", code, type(e).__name__)
             hit = None

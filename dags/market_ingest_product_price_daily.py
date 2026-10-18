@@ -27,9 +27,9 @@ DAG_DOC = """
 | `get_dates` | 실행일 T·상한 T-1 (KST, 늦은 run 도 skip 안 함) |
 | `wait_for_token` / `wait_for_asset_daily` | 시세용 KIS 토큰 · T-1 asset_daily(KIS·업비트 활성 계좌 전부) 대기 |
 | `upsert_products` | asset_daily → `market.product` (이름·보유구간·is_tracked) |
-| `plan_fetch` | 상품별 수집 창 (신규 1년, 증분, 최근 5거래일 재수집, 재매수 최대 1년) |
+| `plan_fetch` | 상품별 수집 창 (신규 1년, 증분, 최근 5거래일 재수집, 재매수 최대 1년 · 펀드는 빈 거래일 있을 때만) |
 | `ingest_prices` (소스별) | 수집 → 원주가 upsert (상품 단위 격리, 실패 상품이 있으면 마지막에 실패) |
-| `ingest_fund_nav` | KOFIA 기준가 → fund_price_daily 빈 날짜만 (config `price_ingest.fund_nav_enabled=false` 면 skip) |
+| `ingest_fund_nav` | KOFIA 기준가 → fund_price_daily 빈 날짜만 (창에 빈 거래일이 있을 때만 호출 — 평소엔 06:55 가 채워 0회. config `price_ingest.fund_nav_enabled=false` 면 skip) |
 | `check_tracked_coverage` | 추적 종목이 3거래일 넘게 뒤처지면 실패·알림 |
 | `fail_if_upstream_failed` | 앞 단계 실패가 있으면 run 실패 (마지막 점검 성공이 실패를 가리지 않게) |
 

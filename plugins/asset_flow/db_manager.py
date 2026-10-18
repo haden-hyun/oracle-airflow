@@ -6,7 +6,7 @@
 - 쓰기: delete_and_insert_account_assets / replace_daily_rows / upsert_ledger / replace_trading_holidays / call_procedure
 - 공통 조회(시세·배당): has_asset_rows / get_holiday_sets / table_has_rows
 - 배당: get_dividend_targets / get_us_holdings / get_usd_rates / get_us_dividend_events / upsert_rows(쓰기)
-- 시세: get_price_targets (조회), upsert_products / upsert_product_prices /
+- 시세: get_price_targets / get_fund_price_dates (조회), upsert_products / upsert_product_prices /
         insert_missing_fund_prices / set_price_from_date (쓰기)
 - 기준 데이터: get_index_last_dates (조회), upsert_index_prices / insert_missing_exchange_rates (쓰기)
 - 모든 쓰기 함수는 첫 줄에서 ensure_writable() — prod 가 아니면 *_staging DB 에만 쓴다
@@ -683,6 +683,27 @@ def get_price_targets(engine: Engine, codes: list[str] | None = None) -> list[di
     """)
     with engine.connect() as conn:
         return [dict(r._mapping) for r in conn.execute(sql, {"codes": codes})]
+
+
+def get_fund_price_dates(engine: Engine, codes: list[str], start: str) -> dict[str, set[date]]:
+    """
+    Purpose: 펀드별 적재일 (FUND_NAV 자동 창의 빈 거래일 판정용)
+    Parameter:
+        - engine: 업무 DB 엔진
+        - codes: 펀드 표준코드
+        - start: 이 날짜 이후만 (YYYY-MM-DD)
+    Input: market.fund_price_daily
+    Output: {코드: {standard_date}} (행이 있으면 적재일 — INSERT 충돌 키와 같은 기준, 0 이하 값도 못 덮으므로 포함)
+    """
+    sql = text("""
+        SELECT product_code, standard_date FROM market.fund_price_daily
+         WHERE product_code = ANY(CAST(:codes AS text[])) AND standard_date >= CAST(:start AS date)
+    """)
+    out: dict[str, set[date]] = {}
+    with engine.connect() as conn:
+        for code, d in conn.execute(sql, {"codes": codes, "start": start}):
+            out.setdefault(code, set()).add(d)
+    return out
 
 
 def upsert_product_prices(engine: Engine, records: list) -> int:
