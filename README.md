@@ -56,8 +56,8 @@ docker compose restart airflow-scheduler airflow-dag-processor airflow-apiserver
 | `AIRFLOW_UID` | 컨테이너 UID (1001) |
 | `META_DB_PASSWORD` · `FERNET_KEY` · `AIRFLOW__API_AUTH__JWT_SECRET` · `AIRFLOW__API__SECRET_KEY` | 인프라 비밀 |
 | `_AIRFLOW_WWW_USER_USERNAME` / `_PASSWORD` | 관리자 계정 |
-| `AIRFLOW__API__BASE_URL` | 알림 링크 URL |
-| `AIRFLOW_HOST_BIND` / `AIRFLOW_HOST_PORT` | UI 바인드 (운영 `0.0.0.0:8080`) |
+| `AIRFLOW__API__BASE_URL` | 알림 링크 URL (운영 `https://airflow.haejunhyun.com` — 대시보드 Cloudflare Tunnel + Access 본인만) |
+| `AIRFLOW_HOST_BIND` / `AIRFLOW_HOST_PORT` | UI 바인드 (운영 `127.0.0.1:8080` — 외부는 Tunnel 로만. `0.0.0.0` 금지) |
 | `ASSET_FLOW_ENV` | `prod` = 운영 DB 쓰기·운영 채널, 그 외(기본 `test`) = `*_staging` DB 만 |
 | `TOKEN_ISSUE_ENABLED` | `true` 일 때만 KIS 토큰 발급 (기본 false) |
 | `TOKEN_HOST_DIR` / `TOKEN_MOUNT_MODE` | 토큰 디렉터리 마운트 (`./data/tokens` / `rw`) |
