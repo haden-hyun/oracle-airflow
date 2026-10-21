@@ -2,10 +2,14 @@
 수기 자산(IRP·DC·적금·청약) 원장 입력 + asset_daily 재계산 DAG (수동 트리거, 월 1회)
 
 - Param account_id = secrets 수기 계좌 id (계좌번호는 태스크 안에서 secrets 로 해석)
-- validate: 날짜 검증 → IRP·DC 는 좌수 × NAV × multiplier 대조(당일이면 자릿수 검증), 적금·청약은 원금 감소 경고
-- upsert: account.manual_position_ledger UPSERT (XCom 에는 계좌 id 와 입력값만)
+- validate: 날짜 검증 → IRP·DC 는 좌수 × NAV × multiplier 대조(당일이면 자릿수 검증),
+  적금·청약은 입금금액 → 누계 계산(또는 누계 직접 입력, 감소는 경고)
+- upsert: account.manual_position_ledger UPSERT (XCom 에는 계좌 id 와 입력값만). 적금·청약은 이후 행 누계도 조정
+- 대시보드(dashboard_owner 계정)가 REST API 로 트리거 — 권한은 이 DAG 만 (access_control)
 - rebuild_from_ledger: 그 계좌만 기준일 ~ 정기 DAG 최종 계산일 재계산 (과거 날짜 입력이 즉시 반영)
-- 마지막: 대시보드 MV 갱신 (finalize)
+- 재계산 뒤 나란히: report_entry(반영 Discord 알림, 앞 단계 실패면 생략, 알림 오류는 run 을 실패시키지 않음)
+  · finalize(대시보드 MV 갱신 + 실패 전파)
+- validate·upsert·rebuild_from_ledger 모두 정기 적재 시간(06:50~07:30 KST)에 시작하면 실패 (대기 run·clear 재실행 포함)
 """
 
 from datetime import date, datetime
@@ -29,9 +33,10 @@ API 가 없는 수기 자산의 포지션을 앱 화면을 보고 입력하는 �
 
 | Task | 내용 |
 |---|---|
-| `validate` | 계좌 id 해석·활성 확인 → 날짜 검증 → IRP·DC NAV 대조 또는 자릿수 검증 / 적금·청약 감소 경고. 재계산 예정 범위 로그 |
-| `upsert` | 같은 `(standard_date, account_code)` 재입력은 오타 정정으로 덮어씀 |
+| `validate` | 정기 적재 시간 차단 → 계좌 id 해석·활성 확인 → 날짜 검증 → IRP·DC NAV 대조 또는 자릿수 검증 / 적금·청약 누계 계산·감소 경고. 재계산 예정 범위 로그 |
+| `upsert` | 같은 `(standard_date, account_code)` 재입력은 오타 정정으로 덮어씀. 적금·청약은 그날 누계 변화분을 이후 원장 행에 가산 |
 | `rebuild_from_ledger` | 그 계좌만 기준일 ~ min(asset_daily 최대 기준일, 어제) 재계산. 범위가 비면 skip, NAV 결측일이 있으면 나머지 적재 후 실패 |
+| `report_entry` | 반영 알림: 계좌·기준일·입력값·누계 변화(예적금)·재계산 일수. 앞 단계 실패면 실행 안 함(실패 알림이 따로 감) |
 | `refresh_dashboard_views` | 대시보드 MV 갱신 프로시저 CALL → 입력이 화면에 바로 반영 |
 | `fail_if_upstream_failed` | 앞 단계 실패가 있으면 run 실패 처리 |
 
@@ -40,7 +45,13 @@ API 가 없는 수기 자산의 포지션을 앱 화면을 보고 입력하는 �
 - 기존 원장 날짜 → 정정으로 진행
 - 이 계좌 최신 원장일보다 과거(빠뜨린 입력) → `allow_backdate=true` 일 때만 진행
 
-정기 실행(06:50~07:30) 중에는 실행하지 않는다 (같은 계좌·날짜 동시 쓰기).
+**적금·청약 입력** (둘 중 하나만)
+- `deposit_amount`(입금금액): 새 누계 = 기준일 직전 누계 + 입금금액. 같은 날 여러 번 입금은 합계로 입력
+- `total_purchase_amount`(누계 직접): 잔액 맞추기. 직전보다 줄면 경고만
+- 과거 날짜 입력·정정 → 그날 누계 변화분을 이후 원장 행 전부에 가산
+
+정기 실행(06:50~07:30) 중에 시작한 validate·upsert·rebuild_from_ledger 는 실패한다 (같은 계좌·날짜 동시 쓰기).
+동시 실행은 1개 (`max_active_runs=1`) — 직전 누계를 읽고 쓰는 사이 다른 입력이 끼지 않게.
 `account_id` 는 secrets 의 수기 계좌 id (예: IRP, DC, INSTALLMENT_SAVINGS, HOUSING_SUBSCRIPTION).
 """
 
@@ -107,26 +118,32 @@ def _resolve(account_id: str):
     schedule=None,
     start_date=datetime(2024, 1, 1, tzinfo=KST),
     catchup=False,
+    max_active_runs=1,
+    access_control={"dashboard_owner": {"DAGs": {"can_read", "can_edit"}, "DAG Runs": {"can_read", "can_create"}}},
     default_args={"owner": "haejun", "retries": 0, "on_failure_callback": discord_failure_callback},
     on_success_callback=discord_recovery_callback,
     tags=["account", "manual", "ledger", "ingestion"],
     params={
-        "account_id": Param("IRP", type="string", pattern=r"^[A-Z][A-Z0-9_]{1,63}$",
+        "account_id": Param("IRP", type="string", pattern=r"^[A-Z][A-Z0-9_]{1,63}$", section="공통",
                             description="secrets 의 수기 계좌 id (IRP, DC, INSTALLMENT_SAVINGS, HOUSING_SUBSCRIPTION)"),
-        "standard_date": Param(None, type=["null", "string"], format="date",
+        "standard_date": Param(None, type=["null", "string"], format="date", section="공통",
                                description="효력 기준일. IRP·DC 는 결제 완료일, 적금·청약은 납입일. 비우면 오늘(KST)"),
-        "holding_quantity": Param(None, type=["null", "number"], description="[IRP·DC 전용] 앱 > 보유수량 (좌)"),
-        "total_purchase_amount": Param(None, type=["null", "number"],
-                                       description="IRP·DC: 앱 > 납입원금 / 적금·청약: 지금까지 넣은 원금 총액"),
-        "evaluation_amount": Param(None, type=["null", "number"],
-                                   description="[IRP·DC 전용·검증용] 앱 > 평가금액. 저장 안 됨. 비우면 매입원금 검증"),
-        "allow_backdate": Param(False, type="boolean",
+        "allow_backdate": Param(False, type="boolean", section="공통",
                                 description="최신 원장일보다 과거 날짜(빠뜨린 입력) 허용. 날짜 오타 방지용 확인"),
+        "total_purchase_amount": Param(None, type=["null", "number"], section="공통",
+                                       description="IRP·DC: 앱 > 납입원금 (필수) / "
+                                                   "적금·청약: 누계 직접 입력(잔액 맞추기) — deposit_amount 와 하나만"),
+        "holding_quantity": Param(None, type=["null", "number"], section="펀드 (IRP·DC)",
+                                  description="앱 > 보유수량 (좌)"),
+        "evaluation_amount": Param(None, type=["null", "number"], section="펀드 (IRP·DC)",
+                                   description="[검증용] 앱 > 평가금액. 저장 안 됨. 비우면 매입원금 검증"),
+        "deposit_amount": Param(None, type=["null", "number"], section="예적금",
+                                description="입금금액. 새 누계 = 직전 누계 + 입금금액. 같은 날 여러 번 입금은 합계로 입력"),
     },
 )
 def account_upsert_manual_position_ledger():
     """
-    Purpose: DAG 구성 (validate → upsert → rebuild_from_ledger → 대시보드 갱신)
+    Purpose: DAG 구성 (validate → upsert → rebuild_from_ledger → [report_entry, 대시보드 갱신])
     Parameter: 없음
     Input: 없음
     Output: 없음
@@ -143,15 +160,17 @@ def account_upsert_manual_position_ledger():
         """
         from asset_flow import db_manager as db
         from asset_flow.app_config import load_app_config
-        from asset_flow.pipeline.ledger_rebuild import check_ledger_date, rebuild_end
+        from asset_flow.pipeline.ledger_rebuild import cash_total, check_ledger_date, check_run_window, rebuild_end
 
+        check_run_window(datetime.now(KST))
         p = get_current_context()["params"]
         acct, product_code, multiplier = _resolve(p["account_id"])
         standard_date = p["standard_date"] or kst_today().isoformat()
         date.fromisoformat(standard_date)
         qty, purchase, evaluation = p["holding_quantity"], p["total_purchase_amount"], p["evaluation_amount"]
-        if purchase is None:
-            raise ValueError("total_purchase_amount는 필수 입력이다")
+        deposit = p.get("deposit_amount")
+        if acct.kind == "manual_fund" and (purchase is None or deposit is not None):
+            raise ValueError(f"[{acct.id}] IRP·DC 는 total_purchase_amount 필수, deposit_amount 는 비워야 한다")
         engine = db.asset_engine()
         if acct.account_code not in db.get_account_master(engine):
             raise ValueError(f"[{acct.id}] account_master 에 활성 계좌 없음")
@@ -183,29 +202,48 @@ def account_upsert_manual_position_ledger():
                                      f"≠ 입력 평가금액 {evaluation:,.0f} (오차 {diff:.2%})")
                 print(f"[검증 통과] 계산 {expected:,.0f} ≈ 입력 {evaluation:,.0f} (오차 {diff:.2%})")
         else:
-            qty = None
             prev = db.get_previous_ledger_amount(engine, acct.account_code, standard_date)
+            purchase = cash_total(deposit, purchase, prev, qty, evaluation)
+            base = "없음(첫 입력)" if prev is None else f"{prev:,.0f}"
+            how = f"입금 {deposit:,.0f}" if deposit is not None else "누계 직접 입력"
+            print(f"[누계] 직전 {base} → 새 누계 {purchase:,.0f} ({how})")
             if prev is not None and purchase < prev:
                 print(f"[경고] 납입원금 누계 감소: 직전 {prev:,.0f} → 입력 {purchase:,.0f}")
         return {"account_id": acct.id, "standard_date": standard_date,
                 "holding_quantity": qty, "total_purchase_amount": purchase}
 
     @task(task_id="upsert", outlets=[MANUAL_LEDGER])
-    def upsert(payload: dict) -> None:
+    def upsert(payload: dict) -> dict:
         """
         Purpose: 검증된 값을 원장에 UPSERT (계좌번호·product_code 는 여기서 재해석)
         Parameter:
             - payload: validate 결과
         Input: secrets·config 파일
-        Output: 없음 (+ account.manual_position_ledger 쓰기, 쓰기 가드 적용)
+        Output: 예적금 {old, new, adjusted} / 펀드 {} (+ account.manual_position_ledger 쓰기, 쓰기 가드 적용)
         """
         from asset_flow import db_manager as db
+        from asset_flow.pipeline.ledger_rebuild import check_run_window
 
+        check_run_window(datetime.now(KST))
         acct, product_code, _ = _resolve(payload["account_id"])
+        result = {}
         row = {k: payload[k] for k in ("standard_date", "holding_quantity", "total_purchase_amount")}
-        db.upsert_ledger(db.asset_engine(), row | {"account_code": acct.account_code, "product_code": product_code})
+        row |= {"account_code": acct.account_code, "product_code": product_code}
+        if acct.kind == "manual_fund":
+            db.upsert_ledger(db.asset_engine(), row)
+        else:
+            # 이 태스크만 clear 해 다시 돌리면 validate 때의 직전 누계로 계산한 값이 남아 있다 → 그사이 바뀌었으면 새로 입력
+            deposit = get_current_context()["params"].get("deposit_amount")
+            if deposit is not None:
+                prev = db.get_previous_ledger_amount(db.asset_engine(), acct.account_code, payload["standard_date"]) or 0
+                if abs(prev + deposit - payload["total_purchase_amount"]) > 0.005:
+                    raise ValueError(f"직전 누계가 검증 뒤 바뀜 ({prev:,.0f}) — validate 부터 다시 실행하거나 새로 입력")
+            old, new, adjusted = db.upsert_cash_ledger(db.asset_engine(), row)
+            result = {"old": old, "new": new, "adjusted": adjusted}
+            print(f"[누계 반영] 그날 기존 {old:,.0f} → {new:,.0f}, 이후 원장 {adjusted}행 {new - old:+,.0f} 조정")
         mark(MANUAL_LEDGER, standard_date=payload["standard_date"], account_id=acct.id)
         print(f"[{payload['standard_date']}] {acct.id} 원장 upsert 완료")
+        return result
 
     @task(task_id="rebuild_from_ledger", outlets=[ASSET_DAILY])
     def rebuild_from_ledger(payload: dict) -> int:
@@ -218,7 +256,7 @@ def account_upsert_manual_position_ledger():
         """
         from asset_flow import db_manager as db
         from asset_flow.pipeline.dispatch import Deps
-        from asset_flow.pipeline.ledger_rebuild import rebuild_end, rebuild_range
+        from asset_flow.pipeline.ledger_rebuild import check_run_window, rebuild_end, rebuild_range
 
         deps, account_id = Deps.load(), payload["account_id"]
         table = deps.app.tables.asset_daily
@@ -226,16 +264,44 @@ def account_upsert_manual_position_ledger():
         end = rebuild_end(db.get_asset_date_bounds(deps.engine, table.db_schema, table.table_name)[1], kst_today())
         if end is None or start > end:
             raise AirflowSkipException(f"재계산 대상 없음 — {start} 부터는 정기 DAG 가 새 원장으로 계산")
+        check_run_window(datetime.now(KST))   # 재계산할 날이 있을 때만 (skip 될 오늘 입력은 막지 않음)
         result = rebuild_range(account_id, start, end, deps)
         if result.nav_missing:
             raise RuntimeError(f"[{account_id}] NAV 결측 {len(result.nav_missing)}일: {result.nav_missing} "
-                               "— 기준가 보충 후 이 태스크만 재실행")
+                               "— 기준가 보충 후 이 태스크만 재실행 (06:50~07:30 제외)")
         mark(ASSET_DAILY, rebuild=f"{start}~{end}", account_id=account_id, days=result.processed)
         return result.processed
 
+    @task(task_id="report_entry", trigger_rule="none_failed")
+    def report_entry(payload: dict, written: dict | None, rebuilt: int | None) -> None:
+        """
+        Purpose: 반영 내용 Discord 알림 (재계산 skip 이어도 보냄)
+        Parameter:
+            - payload: validate 결과
+            - written: upsert 결과 (예적금 누계 변화)
+            - rebuilt: 재계산 일수 (skip 이면 None)
+        Input: secrets 파일(계좌 표시명), Params(입금금액·평가금액), Connection discord_alert[_test]
+        Output: 없음 (+ Discord 전송). 알림 오류는 로그만 — 원장·재계산이 끝난 run 을 실패로 만들지 않음
+        """
+        import logging
+
+        from alerts import make_payload, post_discord
+
+        from asset_flow.pipeline.ledger_rebuild import entry_embed
+
+        try:
+            ctx = get_current_context()
+            acct, _, _ = _resolve(payload["account_id"])
+            post_discord(make_payload(entry_embed(acct.display_name, acct.kind, payload, ctx["params"],
+                                                  written, rebuilt, ctx["run_id"])))
+        except Exception:
+            logging.getLogger(__name__).exception("[report_entry] 반영 알림 생략 (원장·재계산은 완료)")
+
     payload = validate()
+    written = upsert(payload)
     rebuilt = rebuild_from_ledger(payload)
-    upsert(payload) >> rebuilt
+    written >> rebuilt
+    report_entry(payload, written, rebuilt)
     finalize(rebuilt)
 
 

@@ -3,7 +3,7 @@
 
 - asset_engine(): Connection postgres_asset 엔진 (태스크 안에서만 호출)
 - 조회: get_fund_price / get_latest_fund_price / get_fund_names / had_holdings_before / get_market_data_gaps / get_asset_date_bounds / get_ledger_dates / get_manual_positions / get_account_master / get_previous_ledger_amount / get_trading_holidays
-- 쓰기: delete_and_insert_account_assets / replace_daily_rows / upsert_ledger / replace_trading_holidays / call_procedure
+- 쓰기: delete_and_insert_account_assets / replace_daily_rows / upsert_ledger / upsert_cash_ledger / replace_trading_holidays / call_procedure
 - 공통 조회(시세·배당): has_asset_rows / get_holiday_sets / table_has_rows
 - 배당: get_dividend_targets / get_us_holdings / get_usd_rates / get_us_dividend_events / upsert_rows(쓰기)
 - 시세: get_price_targets / get_fund_price_dates (조회), upsert_products / upsert_product_prices /
@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import date
+from decimal import Decimal
 
 import pandas as pd
 from sqlalchemy import text
@@ -361,6 +362,54 @@ def upsert_ledger(engine: Engine, row: dict) -> None:
             """),
             row,
         )
+
+
+def upsert_cash_ledger(engine: Engine, row: dict) -> tuple[float, float, int]:
+    """
+    Purpose: 적금·청약 원장 UPSERT + 이후 원장 행 누계 조정 (한 트랜잭션)
+    Parameter:
+        - engine: 업무 DB 엔진
+        - row: {standard_date, account_code, product_code, total_purchase_amount(그날 새 누계)}
+    Input: account.manual_position_ledger
+    Output: (기존 누계, 새 누계, 조정한 이후 행 수) (+ 원장 쓰기). 기존 누계 = 그날 행, 없으면 직전 행, 없으면 0.
+            조정 후 이후 행 누계가 음수가 되면 ValueError (트랜잭션 전체 롤백)
+    """
+    ensure_writable(engine)
+    key = {"a": row["account_code"], "d": row["standard_date"]}
+    with engine.begin() as conn:
+        # 과거 날짜 입력·정정: 이후 행은 그날까지의 누계를 이월한 값이라 차이만큼 같이 옮긴다
+        old = conn.execute(text("""
+            SELECT total_purchase_amount FROM account.manual_position_ledger
+             WHERE account_code = :a AND standard_date <= :d
+             ORDER BY standard_date DESC LIMIT 1 FOR UPDATE
+        """), key).scalar()
+        # 컬럼이 numeric(20,2) — 반올림한 그날 값과 같은 차이를 이후 행에 더한다
+        old = Decimal(0) if old is None else Decimal(old)
+        new = Decimal(str(row["total_purchase_amount"])).quantize(Decimal("0.01"))
+        conn.execute(text("""
+            INSERT INTO account.manual_position_ledger
+                (standard_date, account_code, product_code, holding_quantity, total_purchase_amount)
+            VALUES (:standard_date, :account_code, :product_code, NULL, :total_purchase_amount)
+            ON CONFLICT (standard_date, account_code) DO UPDATE SET
+                product_code = EXCLUDED.product_code,
+                holding_quantity = NULL,
+                total_purchase_amount = EXCLUDED.total_purchase_amount
+        """), row | {"total_purchase_amount": new})
+        if new == old:
+            return float(old), float(new), 0
+        if new < old:
+            low = conn.execute(text("""
+                SELECT min(total_purchase_amount) FROM account.manual_position_ledger
+                 WHERE account_code = :a AND standard_date > :d
+            """), key).scalar()
+            if low is not None and low + (new - old) < 0:
+                raise ValueError(f"이후 원장 누계가 음수가 됨: 최소 {low:,.0f} {new - old:+,.0f} — 입력값 확인")
+        adjusted = conn.execute(text("""
+            UPDATE account.manual_position_ledger
+               SET total_purchase_amount = total_purchase_amount + :delta
+             WHERE account_code = :a AND standard_date > :d
+        """), key | {"delta": new - old}).rowcount
+    return float(old), float(new), adjusted
 
 
 def get_trading_holidays(engine: Engine, start: str, end: str) -> tuple[dict, set]:

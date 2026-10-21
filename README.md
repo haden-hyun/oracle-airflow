@@ -206,25 +206,52 @@ airflow/
 
 ## 수기 원장 입력 (`account_upsert_manual_position_ledger`)
 
-- UI → Trigger DAG w/ config, 입금·결제 때마다 실행
-- 정기 실행 시간(06:50~07:30) 회피
+- 입력 경로: 대시보드 "수기 입력" 탭(REST API 트리거) 또는 Airflow UI → Trigger DAG w/ config. 입금·결제 때마다 실행
+- 정기 실행 시간(06:50~07:30)에 시작한 validate·upsert·rebuild_from_ledger 는 실패(대기 run·clear 재실행 포함), 동시 실행 1개(`max_active_runs=1`)
 
 | Param | IRP·DC | 적금·청약 |
 |---|---|---|
 | `account_id` | `IRP` / `DC` | `INSTALLMENT_SAVINGS` / `HOUSING_SUBSCRIPTION` |
 | `standard_date` | 결제 완료일 (비우면 오늘) | 납입일 |
 | `holding_quantity` | 보유 좌수 (누적) | 비움 |
-| `total_purchase_amount` | 누적 매입원금 | 누적 납입원금 |
-| `evaluation_amount` | 평가금액 (검증용, 미저장) | 비움 |
+| `total_purchase_amount` | 누적 매입원금 (필수) | 누계 직접 입력(잔액 맞추기) — `deposit_amount` 와 하나만 |
+| `deposit_amount` | 비움 (입력 시 실패) | 입금금액 — 새 누계 = 기준일 직전 누계 + 입금금액 |
+| `evaluation_amount` | 평가금액 (검증용, 미저장) | 비움 (입력 시 실패) |
 | `allow_backdate` | 최신 원장일보다 과거 입력 시만 `true` | 같음 |
 
-- 같은 `(standard_date, account_id)` 재실행 = 덮어쓰기 (오타 정정)
+- 성공 알림(`report_entry`, 재계산 뒤 MV 갱신과 나란히, 알림 오류는 run 을 실패시키지 않음): 계좌·기준일·입력값·총 납입액 변화(예적금)·이후 기록 조정·재계산 일수·입력 경로(대시보드/Airflow UI). 앞 단계 실패면 실패 알림만
+- 같은 `(standard_date, account_id)` 재실행 = 덮어쓰기 (오타 정정) → 같은 날 여러 번 입금은 **합계**로 입력
+- 적금·청약
+  - `deposit_amount`·`total_purchase_amount` 둘 다 / 둘 다 없음 / `deposit_amount <= 0` → 실패
+  - 첫 입력(원장 없음)은 입금금액이 곧 누계, 누계 직접 입력으로 줄면 경고만
+  - 그날 누계가 바뀌면 `새 누계 − 기존 누계`(그날 행, 없으면 직전 행)를 이후 원장 행 전부에 가산 (한 트랜잭션) → 과거 날짜 입력·정정도 이후 누계와 일관
+    - 가정: 이후 행은 모두 앞 누계를 이월한 값. 이후 행을 앱 총액으로 직접 맞춰 넣었다면(그 입금이 이미 포함) 같은 차이가 한 번 더 더해진다 → 그런 행이 있으면 과거 입금 대신 그 행들을 총 납입액으로 정정
+    - 조정 후 이후 행 누계가 음수가 되면 실패(전체 롤백)
+  - 이자는 반영 안 함 (원금만 이월)
 - 검증: 좌수 × NAV × multiplier vs `evaluation_amount`, 1% 초과 오차 시 실패
   - 당일 입력은 기준가 없음 → 최신 기준가로 자릿수 검증
   - `evaluation_amount` 비우면 매입원금으로 검증
 - 날짜: 미래·수집 시작일 이전 실패, 누락된 과거 날짜는 `allow_backdate=true` 필요
 - 재계산: 해당 계좌만 기준일 ~ 최종 계산일, 기준일이 오늘이면 skip
-  - 기준가 결측일 있으면 나머지 적재 후 실패 → 기준가 보충 후 이 태스크만 재실행
+  - 기준가 결측일 있으면 나머지 적재 후 실패 → 기준가 보충 후 이 태스크만 재실행 (06:50~07:30 제외)
+- `upsert` 만 clear 해 재실행할 때 직전 누계가 검증 뒤 바뀌었으면 실패 → validate 부터 다시 실행
+
+### 대시보드 트리거 계정 (`dashboard_owner`)
+
+- 대시보드 백엔드가 `POST /auth/token` → `POST /api/v2/dags/account_upsert_manual_position_ledger/dagRuns` 로 트리거, run·태스크·로그를 폴링
+- 접속 정보: 대시보드 `.env` `AIRFLOW_BASE_URL=http://127.0.0.1:8080` · `AIRFLOW_USERNAME` · `AIRFLOW_PASSWORD`
+- 권한 = 이 DAG 만 (2026-10-21 실측: 다른 DAG 조회·clear 403, 목록·`~` 조회에도 이 DAG 만)
+  - DAG 단위: 코드 `access_control` (`DAGs` read·edit, `DAG Runs` read·create) — 역할이 없으면 DAG import 오류
+  - 전역 읽기 `Task Instances`·`Task Logs`·`DAG Runs`: 태스크·로그 조회용. FAB 가 DAG 단위 read 를 함께 확인해 다른 DAG 는 안 보임
+- 메타 DB 상태라 새로 만들 때 (Airflow 4 에서 `access_control` 제거 예정 — 그때 재검토):
+
+  ```bash
+  docker exec airflow-airflow-scheduler-1 airflow roles create dashboard_owner
+  docker exec airflow-airflow-scheduler-1 airflow roles add-perms dashboard_owner -a can_read -r "Task Instances" "Task Logs" "DAG Runs"
+  docker exec -it airflow-airflow-scheduler-1 airflow users create --username dashboard_owner --role dashboard_owner \
+    --firstname Dashboard --lastname Owner --email dashboard_owner@localhost   # 비밀번호 입력 → 대시보드 .env
+  docker exec airflow-airflow-scheduler-1 airflow sync-perm --include-dags
+  ```
 
 ## 설정
 

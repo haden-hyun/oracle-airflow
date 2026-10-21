@@ -45,6 +45,7 @@ def test_write_guard(monkeypatch, env, dbname, allowed):
     lambda e: db.delete_and_insert_account_assets(e, "account", "asset_daily", "2026-10-11", "X", [{"a": 1}]),
     lambda e: db.replace_daily_rows(e, "market", "fund_price_daily", "2026-10-11", [{"a": 1}]),
     lambda e: db.upsert_ledger(e, {}),
+    lambda e: db.upsert_cash_ledger(e, {}),
     lambda e: db.replace_trading_holidays(e, "2025-01-01", "2027-12-31", []),
     lambda e: db.call_procedure(e, "dashboard.refresh_views"),
     lambda e: db.upsert_rows(e, "market", "dividend_event", [{"a": 1}], ["a"], "2026-10-13"),
