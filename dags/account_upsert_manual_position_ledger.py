@@ -18,7 +18,7 @@ from airflow.sdk import Param, dag, get_current_context, task
 from airflow.sdk.exceptions import AirflowSkipException
 
 from alerts import discord_failure_callback, discord_recovery_callback
-from asset_flow.assets import ASSET_DAILY, MANUAL_LEDGER, mark
+from asset_flow.assets import ASSET_DAILY, FUND_PRICE, MANUAL_LEDGER, SOURCE_MANUAL, mark
 from asset_flow.finalize import finalize
 from asset_flow.runtime import KST, kst_today
 
@@ -149,7 +149,7 @@ def account_upsert_manual_position_ledger():
     Output: 없음
     """
 
-    @task(task_id="validate", multiple_outputs=False)
+    @task(task_id="validate", multiple_outputs=False, inlets=[SOURCE_MANUAL, FUND_PRICE])
     def validate() -> dict:
         """
         Purpose: 입력값 검증 후 원장 저장값 생성
@@ -212,7 +212,7 @@ def account_upsert_manual_position_ledger():
         return {"account_id": acct.id, "standard_date": standard_date,
                 "holding_quantity": qty, "total_purchase_amount": purchase}
 
-    @task(task_id="upsert", outlets=[MANUAL_LEDGER])
+    @task(task_id="upsert", inlets=[SOURCE_MANUAL], outlets=[MANUAL_LEDGER])
     def upsert(payload: dict) -> dict:
         """
         Purpose: 검증된 값을 원장에 UPSERT (계좌번호·product_code 는 여기서 재해석)
@@ -241,11 +241,12 @@ def account_upsert_manual_position_ledger():
             old, new, adjusted = db.upsert_cash_ledger(db.asset_engine(), row)
             result = {"old": old, "new": new, "adjusted": adjusted}
             print(f"[누계 반영] 그날 기존 {old:,.0f} → {new:,.0f}, 이후 원장 {adjusted}행 {new - old:+,.0f} 조정")
-        mark(MANUAL_LEDGER, standard_date=payload["standard_date"], account_id=acct.id)
+        mark(MANUAL_LEDGER, data_date=payload["standard_date"], rows=1 + result.get("adjusted", 0), account_id=acct.id,
+             standard_date=payload["standard_date"])
         print(f"[{payload['standard_date']}] {acct.id} 원장 upsert 완료")
         return result
 
-    @task(task_id="rebuild_from_ledger", outlets=[ASSET_DAILY])
+    @task(task_id="rebuild_from_ledger", inlets=[FUND_PRICE], outlets=[ASSET_DAILY])
     def rebuild_from_ledger(payload: dict) -> int:
         """
         Purpose: 입력 계좌 asset_daily 재계산 (기준일 ~ 정기 DAG 최종 계산일)
@@ -269,7 +270,8 @@ def account_upsert_manual_position_ledger():
         if result.nav_missing:
             raise RuntimeError(f"[{account_id}] NAV 결측 {len(result.nav_missing)}일: {result.nav_missing} "
                                "— 기준가 보충 후 이 태스크만 재실행 (06:50~07:30 제외)")
-        mark(ASSET_DAILY, rebuild=f"{start}~{end}", account_id=account_id, days=result.processed)
+        mark(ASSET_DAILY, data_date=end.isoformat(), rows=result.rows, data_from=start.isoformat(),
+             data_to=end.isoformat(), account_id=account_id, rebuild=f"{start}~{end}", days=result.processed)
         return result.processed
 
     @task(task_id="report_entry", trigger_rule="none_failed")

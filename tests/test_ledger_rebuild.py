@@ -125,9 +125,9 @@ def test_rebuild_range_counts_and_collects_nav_gaps(monkeypatch):
 
     written = []
     monkeypatch.setitem(lr.HANDLERS, "manual_fund", handler)
-    monkeypatch.setattr(lr, "write_account", lambda acct, d, df, deps: written.append(d))
+    monkeypatch.setattr(lr, "write_account", lambda acct, d, df, deps: written.append(d) or len(df))
     r = lr.rebuild_range("IRP", D("2026-10-01"), D("2026-10-04"), _deps())
-    assert (r.processed, r.skipped, r.nav_missing) == (2, 1, ["2026-10-03"])
+    assert (r.processed, r.rows, r.skipped, r.nav_missing) == (2, 2, 1, ["2026-10-03"])
     assert written == ["2026-10-02", "2026-10-04"]
 
 

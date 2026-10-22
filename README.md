@@ -91,7 +91,7 @@ airflow/
 ## 스케줄 (KST)
 
 ```
-06:00  market_ingest_trading_holiday          (독립, 변경 없으면 skip)
+06:00  market_ingest_trading_holiday          (독립, 변경 없으면 알림 skip)
 06:50  auth_issue_api_tokens                  ← KIS 토큰 발급은 여기서만
          │ 센서: 유효 토큰
 06:55  market_ingest_reference_daily          [exchange_rate] [fund_price] [market_index] — 그룹끼리 독립
@@ -185,7 +185,11 @@ airflow/
   - 환율·지수·시세·배당 일정은 `services.exchange_rate_credential` 키, 배당 원장은 각 계좌 키 사용
 - MV 갱신 `CALL dashboard.refresh_views()`: 자산·수기 DAG 마지막 태스크 (일부 실패해도 갱신, run 은 실패 유지)
   - 시세 DAG · 기준 데이터 환율·펀드는 갱신 안 함, 배당 DAG · 지수 그룹은 config 스위치
-- 적재 테이블 = Airflow Asset `outlets` (계보·이력 표시 전용, 스케줄 미사용)
+- Airflow Asset = 계보·이력 표시 전용 (스케줄 미사용, 대시보드 '데이터 › 흐름' 탭이 REST 로 읽음)
+  - `outlets`: 적재 테이블 · `refresh_dashboard_views`(finalize) → MV `dashboard.mv_position_daily`·`mv_cost_basis_krw`
+  - `inlets`: 외부 API·수기 입력 → `source.kis`·`upbit`·`kofia`·`fundguide`·`kasi`·`manual` (이름만), 다른 DAG 가 쓴 테이블을 읽으면 그 테이블 (같은 DAG 가 쓰는 테이블은 제외 — 자기 순환 방지. DAG 사이 고리는 남음: 자산 DAG → `asset_daily` → 시세 DAG → `fund_price_daily` → 자산 DAG)
+  - `group`: `market`·`account`·`dividend`(배당 2개)·`dashboard`·`source`
+  - 이벤트 메모 공통 키: `data_date`(YYYY-MM-DD, 구간이면 끝)·`rows`(쓴 행 수, 변경 없음 0 — 휴장일 DAG 는 변경 없어도 `rows=0` 이벤트)·`env`, 구간은 `data_from`·`data_to`, 계좌 단위는 `account_id` (계좌번호 금지). 옛 키(`standard_date`·`base_date`·`end`·`rebuild`·`days`)는 당분간 함께
 - 알림: 태스크 최종 실패 시 Discord, 직전 run 실패였으면 복구 알림
   - 본문의 키·계좌번호는 `alerts.redact` 로 가림 (DB DETAIL·HTTP URL 포함)
   - `fail_if_upstream_failed`: 마지막 점검 성공이 앞 단계 실패를 가리지 않게 run 실패 처리
@@ -240,17 +244,25 @@ airflow/
 
 - 대시보드 백엔드가 `POST /auth/token` → `POST /api/v2/dags/account_upsert_manual_position_ledger/dagRuns` 로 트리거, run·태스크·로그를 폴링
 - 접속 정보: 대시보드 `.env` `AIRFLOW_BASE_URL=http://127.0.0.1:8080` · `AIRFLOW_USERNAME` · `AIRFLOW_PASSWORD`
-- 권한 = 이 DAG 만 (2026-10-21 실측: 다른 DAG 조회·clear 403, 목록·`~` 조회에도 이 DAG 만)
+- 대시보드 '데이터 › 흐름' 탭도 이 계정으로 `/api/v2/dags`·`/dags/~/dagRuns`·`/dags/~/dagRuns/~/taskInstances`·`/assets`·`/assets/events` 를 읽는다
+- 권한 = 전체 DAG·Asset **읽기** + 이 DAG 만 **쓰기**(트리거)
   - DAG 단위: 코드 `access_control` (`DAGs` read·edit, `DAG Runs` read·create) — 역할이 없으면 DAG import 오류
-  - 전역 읽기 `Task Instances`·`Task Logs`·`DAG Runs`: 태스크·로그 조회용. FAB 가 DAG 단위 read 를 함께 확인해 다른 DAG 는 안 보임
+  - 전역 읽기 `DAGs`·`Assets`·`Asset Aliases`·`Task Instances`·`Task Logs`·`DAG Runs`: 흐름 탭·태스크·로그 조회용 (2026-10-22 추가 `DAGs`·`Assets`·`Asset Aliases` — `GET /assets` 는 Alias 읽기도 확인)
+  - 전역 `can_edit`·`can_create` 는 주지 않는다 — FAB 는 트리거에 `DAGs` edit + `DAG Runs` create 를 함께 확인 → 다른 DAG POST dagRuns 403
 - 메타 DB 상태라 새로 만들 때 (Airflow 4 에서 `access_control` 제거 예정 — 그때 재검토):
 
   ```bash
   docker exec airflow-airflow-scheduler-1 airflow roles create dashboard_owner
-  docker exec airflow-airflow-scheduler-1 airflow roles add-perms dashboard_owner -a can_read -r "Task Instances" "Task Logs" "DAG Runs"
+  docker exec airflow-airflow-scheduler-1 airflow roles add-perms dashboard_owner -a can_read -r "Task Instances" "Task Logs" "DAG Runs" "DAGs" "Assets" "Asset Aliases"
   docker exec -it airflow-airflow-scheduler-1 airflow users create --username dashboard_owner --role dashboard_owner \
     --firstname Dashboard --lastname Owner --email dashboard_owner@localhost   # 비밀번호 입력 → 대시보드 .env
   docker exec airflow-airflow-scheduler-1 airflow sync-perm --include-dags
+  ```
+
+- 기존 역할에 흐름 탭 읽기만 더할 때 (재시작 불필요):
+
+  ```bash
+  docker exec airflow-airflow-scheduler-1 airflow roles add-perms dashboard_owner -a can_read -r "DAGs" "Assets" "Asset Aliases"
   ```
 
 ## 설정
@@ -279,7 +291,7 @@ airflow/
 |---|---|
 | `secrets_config.py` | secrets 로더 (pydantic strict, 마스킹) + 검증 CLI |
 | `app_config.py` | config yaml 로더 |
-| `assets.py` | Asset 정의·이벤트 메모 |
+| `assets.py` | Asset 정의(테이블·MV·외부 출처)·이벤트 메모(`data_date`·`rows` 필수) |
 | `finalize.py` | MV 갱신 + 상류 실패 반영 |
 | `tokens.py` | KIS 토큰 (credential 단위·flock·원자적 저장, `existing_token` = 발급 없이 조회) |
 | `pipeline/dispatch.py` | kind → 수집 핸들러, `collect_account` |

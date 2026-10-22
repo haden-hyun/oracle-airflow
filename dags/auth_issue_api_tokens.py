@@ -12,6 +12,7 @@ from airflow.sdk import Param, dag, get_current_context, task
 from airflow.sdk.exceptions import AirflowSkipException
 
 from alerts import discord_failure_callback, discord_recovery_callback
+from asset_flow.assets import SOURCE_KIS, SOURCE_UPBIT
 from asset_flow.runtime import KST, kst_run_end
 
 DAG_DOC = """
@@ -49,7 +50,7 @@ def auth_issue_api_tokens():
     Output: 없음
     """
 
-    @task(task_id="generate_tokens")
+    @task(task_id="generate_tokens", inlets=[SOURCE_KIS])
     def generate_tokens() -> list[str]:
         """
         Purpose: 사용 중 KIS credential 토큰 확보 (발급 금지 모드면 유효 토큰 존재만 검증)
@@ -63,7 +64,7 @@ def auth_issue_api_tokens():
         cfg = load_secrets()
         return TokenManager(cfg).ensure_all(c.id for c in cfg.credentials_in_use() if c.provider == "kis")
 
-    @task(task_id="check_key_expiry", retries=1, retry_delay=timedelta(minutes=2))
+    @task(task_id="check_key_expiry", inlets=[SOURCE_UPBIT], retries=1, retry_delay=timedelta(minutes=2))
     def check_key_expiry() -> list[str]:
         """
         Purpose: API 키 만료·설정 정합성 점검 후 필요 시 Discord 알림

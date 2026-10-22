@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 from airflow.sdk import Param, dag, get_current_context, task
 
 from alerts import discord_failure_callback, discord_recovery_callback
-from asset_flow.assets import FUND_PRICE, PRODUCT, PRODUCT_PRICE, mark
+from asset_flow.assets import (ASSET_DAILY, FUND_PRICE, PRODUCT, PRODUCT_PRICE, SOURCE_KIS, SOURCE_KOFIA, SOURCE_UPBIT,
+                               TRADING_HOLIDAY, mark)
 from asset_flow.finalize import fail_if_upstream_failed
 from asset_flow.runtime import KST, kst_run_end
 
@@ -91,7 +92,7 @@ def market_ingest_product_price_daily():
         t = kst_run_end(get_current_context())
         return {"base_date": t.to_date_string(), "end": t.subtract(days=1).to_date_string()}
 
-    @task.sensor(task_id="wait_for_asset_daily", **sensor)
+    @task.sensor(task_id="wait_for_asset_daily", inlets=[ASSET_DAILY], **sensor)
     def wait_for_asset_daily(dates: dict) -> bool:
         """
         Purpose: T-1 asset_daily 적재 대기 (API 수집 계좌 전부 — 신규 종목 누락 방지)
@@ -106,25 +107,25 @@ def market_ingest_product_price_daily():
         codes = [a.account_code for a in load_secrets().active_accounts() if a.kind not in MANUAL_KINDS]
         return db.has_asset_rows(db.asset_engine(), dates["end"], codes)
 
-    @task(task_id="upsert_products", outlets=[PRODUCT])
+    @task(task_id="upsert_products", inlets=[ASSET_DAILY], outlets=[PRODUCT])
     def upsert_products(dates: dict) -> dict:
         """
         Purpose: asset_daily 상품 → market.product
         Parameter:
             - dates: get_dates 결과
         Input: account.asset_daily, config price_ingest
-        Output: {"total", "tracked", "new"} (+ DB 쓰기)
+        Output: {"total", "tracked", "new", "changed"} (+ DB 쓰기)
         """
         from asset_flow import db_manager as db
         from asset_flow.app_config import load_app_config
 
         res = db.upsert_products(db.asset_engine(), dates["base_date"],
                                  load_app_config().price_ingest.tracked_after_sale_days)
-        mark(PRODUCT, base_date=dates["base_date"], **res)
+        mark(PRODUCT, data_date=dates["end"], rows=res["changed"], base_date=dates["base_date"], **res)
         print(f"상품 {res}")
         return res
 
-    @task(task_id="plan_fetch")
+    @task(task_id="plan_fetch", inlets=[TRADING_HOLIDAY])
     def plan_fetch(dates: dict) -> dict:
         """
         Purpose: 상품별 수집 창 계산
@@ -137,8 +138,8 @@ def market_ingest_product_price_daily():
 
         return build_plan(dates, get_current_context()["params"])
 
-    @task(task_id="ingest_prices", outlets=[PRODUCT_PRICE], map_index_template="{{ source }}",
-          max_active_tis_per_dagrun=3)
+    @task(task_id="ingest_prices", inlets=[SOURCE_KIS, SOURCE_UPBIT], outlets=[PRODUCT_PRICE],
+          map_index_template="{{ source }}", max_active_tis_per_dagrun=3)
     def ingest_prices(source: str, plan: dict, dates: dict) -> dict:
         """
         Purpose: 소스 1개 수집·적재 (상품 단위 격리)
@@ -153,12 +154,13 @@ def market_ingest_product_price_daily():
 
         get_current_context()["source"] = source
         res = run_source(source, plan.get(source, []))
-        mark(PRODUCT_PRICE, end=dates["end"], source=source, rows=res["rows"], products=res["products"])
+        mark(PRODUCT_PRICE, data_date=dates["end"], rows=res["rows"], source=source, products=res["products"],
+             end=dates["end"])
         if res["failed"]:
             raise RuntimeError(f"[{source}] 실패 {len(res['failed'])}개: {res['failed']}")
         return res
 
-    @task(task_id="ingest_fund_nav", outlets=[FUND_PRICE])
+    @task(task_id="ingest_fund_nav", inlets=[SOURCE_KOFIA], outlets=[FUND_PRICE])
     def ingest_fund_nav(plan: dict, dates: dict) -> dict:
         """
         Purpose: KOFIA 기준가 → fund_price_daily 빈 날짜만 (기존 행 불변)
@@ -176,12 +178,12 @@ def market_ingest_product_price_daily():
         if not load_app_config().price_ingest.fund_nav_enabled:
             raise AirflowSkipException("price_ingest.fund_nav_enabled=false")
         res = run_source("FUND_NAV", plan.get("FUND_NAV", []))
-        mark(FUND_PRICE, end=dates["end"], source="KOFIA", rows=res["rows"])
+        mark(FUND_PRICE, data_date=dates["end"], rows=res["rows"], source="KOFIA", end=dates["end"])
         if res["failed"]:
             raise RuntimeError(f"[FUND_NAV] 실패: {res['failed']}")
         return res
 
-    @task(task_id="check_tracked_coverage", retries=0, trigger_rule="all_done")
+    @task(task_id="check_tracked_coverage", inlets=[TRADING_HOLIDAY], retries=0, trigger_rule="all_done")
     def check_tracked_coverage(dates: dict) -> None:
         """
         Purpose: 추적 종목 최신성 점검 (거래정지·상장폐지·소스 이상 조기 발견)

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from airflow.sdk import Param, dag, get_current_context, task
 
 from alerts import discord_failure_callback, discord_recovery_callback
-from asset_flow.assets import ASSET_DAILY, mark
+from asset_flow.assets import ASSET_DAILY, EXCHANGE_RATE, FUND_PRICE, MANUAL_LEDGER, SOURCE_KIS, SOURCE_UPBIT, mark
 from asset_flow.finalize import finalize
 from asset_flow.runtime import KST, standard_dates
 
@@ -81,7 +81,7 @@ def account_ingest_asset_daily():
 
     sensor = {"poke_interval": 30, "timeout": 600, "mode": "reschedule"}
 
-    @task.sensor(task_id="wait_for_exchange_rate", **sensor)
+    @task.sensor(task_id="wait_for_exchange_rate", inlets=[EXCHANGE_RATE], **sensor)
     def wait_for_exchange_rate(dates: dict) -> bool:
         """
         Purpose: 기준일 환율 4종 적재 대기
@@ -92,7 +92,7 @@ def account_ingest_asset_daily():
         """
         return not market_gaps(dates, "fx")
 
-    @task.sensor(task_id="wait_for_fund_price_daily", **sensor)
+    @task.sensor(task_id="wait_for_fund_price_daily", inlets=[FUND_PRICE], **sensor)
     def wait_for_fund_price_daily(dates: dict) -> bool:
         """
         Purpose: 기준일 펀드 기준가 적재 대기 (연금저축·수기 펀드 계좌가 쓰는 코드만)
@@ -131,6 +131,7 @@ def account_ingest_asset_daily():
 
     @task(
         task_id="collect_account",
+        inlets=[SOURCE_KIS, SOURCE_UPBIT, EXCHANGE_RATE, FUND_PRICE, MANUAL_LEDGER],
         outlets=[ASSET_DAILY],
         multiple_outputs=False,
         map_index_template="{{ account_id }}",
@@ -153,7 +154,8 @@ def account_ingest_asset_daily():
         ctx = get_current_context()
         ctx["account_id"] = account_id                        # map_index_template 표시명
         rows = run(account_id, dates, Deps.load(), allow_cash_only=account_id in ctx["params"]["allow_cash_only"])
-        mark(ASSET_DAILY, standard_date=dates["standard_date"], account_id=account_id, rows=rows)
+        mark(ASSET_DAILY, data_date=dates["standard_date"], rows=rows, account_id=account_id,
+             standard_date=dates["standard_date"])
         return {"account_id": account_id, "rows": rows}
 
     dates = get_standard_date()

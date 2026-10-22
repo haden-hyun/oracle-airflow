@@ -20,6 +20,7 @@ from asset_flow.pipeline.dispatch import HANDLERS, Deps, write_account
 @dataclass
 class RebuildResult:
     processed: int = 0                                   # 재적재한 날 수
+    rows: int = 0                                        # 재적재한 asset_daily 행 수
     skipped: int = 0                                     # 원장 없는 날 (개설 전, 정상)
     nav_missing: list[str] = field(default_factory=list)  # NAV 결측으로 건너뛴 날
 
@@ -133,7 +134,7 @@ def rebuild_range(account_id: str, start: date, end: date, deps: Deps) -> Rebuil
         if df.empty:                            # 원장 없음 (계좌 개설 전) — 정상
             result.skipped += 1
             continue
-        write_account(acct, d, df, deps)
+        result.rows += write_account(acct, d, df, deps)
         result.processed += 1
     print(f"[{account_id}] 재계산 {start}~{end}: {result.processed}일 적재 / {result.skipped}일 원장없음 / "
           f"{len(result.nav_missing)}일 NAV결측")

@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 from airflow.sdk import Param, dag, get_current_context, task
 
 from alerts import discord_failure_callback, discord_recovery_callback
-from asset_flow.assets import DIVIDEND_EVENT, DIVIDEND_RECEIPT, mark
+from asset_flow.assets import (ASSET_DAILY, DIVIDEND_EVENT, DIVIDEND_RECEIPT, EXCHANGE_RATE, MV_COST_BASIS_KRW,
+                               MV_POSITION_DAILY, PRODUCT, SOURCE_KIS, TRADING_HOLIDAY, mark)
 from asset_flow.finalize import fail_if_upstream_failed
 from asset_flow.runtime import KST, kst_run_end
 
@@ -98,7 +99,7 @@ def account_ingest_dividend():
         cfg = load_secrets()
         return TokenManager(cfg).has_valid_token(cfg.services.exchange_rate_credential)
 
-    @task(task_id="list_targets")
+    @task(task_id="list_targets", inlets=[PRODUCT, ASSET_DAILY])
     def list_targets(win: dict) -> dict:
         """
         Purpose: 배당 조회 대상 종목
@@ -118,7 +119,7 @@ def account_ingest_dividend():
                                f"({targets['source']})")
         return targets
 
-    @task(task_id="ingest_kr_events", outlets=[DIVIDEND_EVENT], **retry)
+    @task(task_id="ingest_kr_events", inlets=[SOURCE_KIS, TRADING_HOLIDAY], outlets=[DIVIDEND_EVENT], **retry)
     def ingest_kr_events(targets: dict, win: dict) -> dict:
         """
         Purpose: 국내 일정 수집·적재
@@ -132,10 +133,10 @@ def account_ingest_dividend():
         from asset_flow.pipeline.dividend import ingest_kr_events as run
 
         result = run(targets["kr"], win, Deps.load())
-        mark(DIVIDEND_EVENT, market="KR", base_date=win["base_date"], rows=result["rows"])
+        mark(DIVIDEND_EVENT, data_date=win["base_date"], rows=result["rows"], market="KR", base_date=win["base_date"])
         return result
 
-    @task(task_id="ingest_us_events", outlets=[DIVIDEND_EVENT], **retry)
+    @task(task_id="ingest_us_events", inlets=[SOURCE_KIS], outlets=[DIVIDEND_EVENT], **retry)
     def ingest_us_events(targets: dict, win: dict) -> dict:
         """
         Purpose: 미국 일정(금액 + 권리종합) 수집·적재
@@ -149,7 +150,7 @@ def account_ingest_dividend():
         from asset_flow.pipeline.dividend import ingest_us_events as run
 
         result = run(targets["us"], win, Deps.load())
-        mark(DIVIDEND_EVENT, market="US", base_date=win["base_date"], rows=result["rows"])
+        mark(DIVIDEND_EVENT, data_date=win["base_date"], rows=result["rows"], market="US", base_date=win["base_date"])
         return result
 
     @task(task_id="list_receipt_accounts")
@@ -169,8 +170,8 @@ def account_ingest_dividend():
         print(f"원장 대상 {len(ids)}개 계좌: {ids}")
         return ids
 
-    @task(task_id="ingest_receipts", outlets=[DIVIDEND_RECEIPT], map_index_template="{{ account_id }}",
-          max_active_tis_per_dagrun=2, **retry)
+    @task(task_id="ingest_receipts", inlets=[SOURCE_KIS, TRADING_HOLIDAY], outlets=[DIVIDEND_RECEIPT],
+          map_index_template="{{ account_id }}", max_active_tis_per_dagrun=2, **retry)
     def ingest_receipts(account_id: str, win: dict) -> dict:
         """
         Purpose: 계좌 1개 국내 수령 원장 수집·적재
@@ -185,10 +186,10 @@ def account_ingest_dividend():
 
         get_current_context()["account_id"] = account_id     # map_index_template 표시명
         rows = run(account_id, win, Deps.load())
-        mark(DIVIDEND_RECEIPT, account_id=account_id, base_date=win["base_date"], rows=rows)
+        mark(DIVIDEND_RECEIPT, data_date=win["base_date"], rows=rows, account_id=account_id, base_date=win["base_date"])
         return {"account_id": account_id, "rows": rows}
 
-    @task.sensor(task_id="wait_for_asset_daily", **sensor)
+    @task.sensor(task_id="wait_for_asset_daily", inlets=[ASSET_DAILY], **sensor)
     def wait_for_asset_daily(win: dict) -> bool:
         """
         Purpose: 위탁 계좌 T−1 asset_daily 적재 대기 (미국 추정 수량)
@@ -203,7 +204,7 @@ def account_ingest_dividend():
         codes = [a.account_code for a in load_secrets().active_accounts("kis_stock")]
         return db.has_asset_rows(db.asset_engine(), win["standard_date"], codes)
 
-    @task(task_id="estimate_us_receipts", outlets=[DIVIDEND_RECEIPT])
+    @task(task_id="estimate_us_receipts", inlets=[ASSET_DAILY, EXCHANGE_RATE], outlets=[DIVIDEND_RECEIPT])
     def estimate_us_receipts(win: dict) -> int:
         """
         Purpose: 미국 추정 수령 원장 생성·적재
@@ -216,16 +217,17 @@ def account_ingest_dividend():
         from asset_flow.pipeline.dividend import estimate_us_receipts as run
 
         rows = run(win, Deps.load())
-        mark(DIVIDEND_RECEIPT, kind="US_ESTIMATE", base_date=win["base_date"], rows=rows)
+        mark(DIVIDEND_RECEIPT, data_date=win["base_date"], rows=rows, kind="US_ESTIMATE", base_date=win["base_date"])
         return rows
 
-    @task(task_id="refresh_dashboard_views", trigger_rule="all_done", retries=1, retry_delay=timedelta(seconds=30))
+    @task(task_id="refresh_dashboard_views", trigger_rule="all_done", retries=1, retry_delay=timedelta(seconds=30),
+          outlets=[MV_POSITION_DAILY, MV_COST_BASIS_KRW])
     def refresh_dashboard_views() -> None:
         """
         Purpose: 대시보드 MV 갱신 (config dividend.refresh_dashboard_views=true 일 때만)
         Parameter: 없음
         Input: config dividend.refresh_dashboard_views, dashboard.refresh_procedure
-        Output: 없음 (+ 프로시저 CALL). false 면 AirflowSkipException
+        Output: 없음 (+ 프로시저 CALL, MV Asset 이벤트). false 면 AirflowSkipException
         """
         from airflow.sdk.exceptions import AirflowSkipException
 

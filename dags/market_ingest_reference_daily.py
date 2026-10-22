@@ -13,7 +13,8 @@ from datetime import datetime, timedelta
 from airflow.sdk import Param, dag, get_current_context, task, task_group
 
 from alerts import discord_failure_callback, discord_recovery_callback
-from asset_flow.assets import EXCHANGE_RATE, FUND_PRICE, MARKET_INDEX, mark
+from asset_flow.assets import (EXCHANGE_RATE, FUND_PRICE, MARKET_INDEX, MV_COST_BASIS_KRW, MV_POSITION_DAILY,
+                               SOURCE_FUNDGUIDE, SOURCE_KIS, SOURCE_KOFIA, TRADING_HOLIDAY, mark)
 from asset_flow.runtime import KST, kst_run_end, standard_dates
 
 GROUPS = ["exchange_rate", "fund_price", "market_index"]
@@ -150,7 +151,7 @@ def market_ingest_reference_daily():
                 raise AirflowSkipException("start_date 지정 = 백필 run → 매일 경로 skip")
             return standard_dates(get_current_context())["standard_date"]
 
-        @task(task_id="fetch_exchange_rates", retries=3, retry_delay=timedelta(seconds=20),
+        @task(task_id="fetch_exchange_rates", inlets=[SOURCE_KIS], retries=3, retry_delay=timedelta(seconds=20),
               retry_exponential_backoff=2.0)
         def fetch_exchange_rates(standard_date: str) -> list:
             """
@@ -193,10 +194,10 @@ def market_ingest_reference_daily():
 
             table = load_app_config().tables.exchange_rate_daily
             n = db.replace_daily_rows(db.asset_engine(), table.db_schema, table.table_name, standard_date, records)
-            mark(EXCHANGE_RATE, standard_date=standard_date, rows=n)
+            mark(EXCHANGE_RATE, data_date=standard_date, rows=n, standard_date=standard_date)
             return n
 
-        @task(task_id="backfill_exchange_rates", outlets=[EXCHANGE_RATE], retries=2,
+        @task(task_id="backfill_exchange_rates", inlets=[SOURCE_KIS], outlets=[EXCHANGE_RATE], retries=2,
               retry_delay=timedelta(seconds=30))
         def backfill_exchange_rates() -> int:
             """
@@ -221,7 +222,8 @@ def market_ingest_reference_daily():
                 raise ValueError(f"start_date {params['start_date']} > end {end} (상한 T-1)")
             records = collect_exchange_rate_history(kis_client(), params["start_date"], end)
             n = db.insert_missing_exchange_rates(db.asset_engine(), records)
-            mark(EXCHANGE_RATE, start=params["start_date"], end=end, rows=n)
+            mark(EXCHANGE_RATE, data_date=end, rows=n, data_from=params["start_date"], data_to=end,
+                 start=params["start_date"], end=end)
             print(f"환율 백필 {params['start_date']}~{end}: 이력 {len(records)}행 중 {n}행 추가 (나머지는 기존 행)")
             return n
 
@@ -265,7 +267,7 @@ def market_ingest_reference_daily():
             extra = get_current_context()["params"]["extra_fund_codes"]
             return fund_codes_to_crawl(load_secrets(), load_app_config(), extra)
 
-        @task(task_id="collect_fund_prices")
+        @task(task_id="collect_fund_prices", inlets=[SOURCE_KOFIA, SOURCE_FUNDGUIDE, TRADING_HOLIDAY])
         def collect_fund_prices(standard_date: str, codes: list[str]) -> dict:
             """
             Purpose: 기준가 수집 (KOFIA → 빠진 코드만 fundguide 크롤링)
@@ -307,7 +309,7 @@ def market_ingest_reference_daily():
             table = load_app_config().tables.fund_price_daily
             n = db.replace_daily_rows(db.asset_engine(), table.db_schema, table.table_name, standard_date, records,
                                       key_column="product_code")
-            mark(FUND_PRICE, standard_date=standard_date, rows=n)
+            mark(FUND_PRICE, data_date=standard_date, rows=n, standard_date=standard_date)
             return n
 
         @task(task_id="check_fund_coverage", retries=0)
@@ -327,7 +329,7 @@ def market_ingest_reference_daily():
                                    f"KOFIA 공시 확인 후 수동 재실행")
             print(f"[{standard_date}] 기준가 {len(codes)}개 모두 적재됨")
 
-        @task(task_id="compare_with_fundguide", retries=0, max_active_tis_per_dag=1)
+        @task(task_id="compare_with_fundguide", inlets=[SOURCE_FUNDGUIDE], retries=0, max_active_tis_per_dag=1)
         def compare_with_fundguide(standard_date: str, collected: dict) -> None:
             """
             Purpose: 전환 검증 — KOFIA 적재값과 fundguide 크롤링 값 대조
@@ -367,7 +369,7 @@ def market_ingest_reference_daily():
         Output: 없음
         """
 
-        @task(task_id="plan_index_windows")
+        @task(task_id="plan_index_windows", inlets=[TRADING_HOLIDAY])
         def plan_index_windows() -> dict:
             """
             Purpose: 지수별 수집 창 (늦은 run 도 skip 안 함 — 이력 API)
@@ -394,8 +396,8 @@ def market_ingest_reference_daily():
             print(f"T={base} 창: {windows}")
             return {"windows": windows, "holiday_from": hol_from}
 
-        @task(task_id="collect_index_prices", retries=3, retry_delay=timedelta(seconds=30),
-              retry_exponential_backoff=2.0)
+        @task(task_id="collect_index_prices", inlets=[SOURCE_KIS, TRADING_HOLIDAY], retries=3,
+              retry_delay=timedelta(seconds=30), retry_exponential_backoff=2.0)
         def collect_index_prices(plan: dict) -> list:
             """
             Purpose: 지수 이력 조회 → index_daily 레코드 (창 끝 거래일 행 검증)
@@ -426,18 +428,23 @@ def market_ingest_reference_daily():
             from asset_flow import db_manager as db
 
             n = db.upsert_index_prices(db.asset_engine(), records)
-            ends = sorted({w["end"] for w in plan["windows"]})
-            mark(MARKET_INDEX, end=ends[-1] if ends else None, rows=n)
+            if ws := plan["windows"]:
+                start, end = min(w["start"] for w in ws), max(w["end"] for w in ws)
+                mark(MARKET_INDEX, data_date=end, rows=n, data_from=start, data_to=end, end=end)
+            else:                                            # 창 없음 = 이미 최신 → T-1 기준 변경 없음
+                t_1 = kst_run_end(get_current_context()).subtract(days=1).to_date_string()
+                mark(MARKET_INDEX, data_date=t_1, rows=n)
             print(f"지수 {n}행 upsert: {[(w['index_code'], w['start'], w['end']) for w in plan['windows']]}")
             return n
 
-        @task(task_id="refresh_dashboard_views", retries=1, retry_delay=timedelta(seconds=30))
+        @task(task_id="refresh_dashboard_views", retries=1, retry_delay=timedelta(seconds=30),
+              outlets=[MV_POSITION_DAILY, MV_COST_BASIS_KRW])
         def refresh_dashboard_views() -> None:
             """
             Purpose: 대시보드 MV 갱신 (config reference_ingest.market_index.refresh_dashboard_views=true 일 때만)
             Parameter: 없음
             Input: config reference_ingest.market_index.refresh_dashboard_views, dashboard.refresh_procedure
-            Output: 없음 (+ 프로시저 CALL). 스위치 off 면 skip
+            Output: 없음 (+ 프로시저 CALL, MV Asset 이벤트). 스위치 off 면 skip
             """
             from airflow.sdk.exceptions import AirflowSkipException
 

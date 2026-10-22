@@ -657,7 +657,8 @@ def upsert_products(engine: Engine, base_date: str, tracked_after_sale_days: int
         - base_date: 실행일 T (YYYY-MM-DD) — 매도 후 추적 기준 T-1
         - tracked_after_sale_days: 매도 후 추적 일수 (config)
     Input: account.asset_daily
-    Output: {"total", "tracked", "new"} (+ market.product INSERT/UPDATE, 삭제 없음, 단일 트랜잭션).
+    Output: {"total", "tracked", "new", "changed"} (+ market.product INSERT/UPDATE, 삭제 없음, 단일 트랜잭션).
+            changed = 이번에 INSERT·UPDATE 한 행 수 (값이 같은 행은 갱신 안 함)
             asset_type·market·currency_code·price_source·source_symbol 은 INSERT 때만 정함 (사람이 고친 값 보존)
     """
     ensure_writable(engine)
@@ -699,10 +700,11 @@ def upsert_products(engine: Engine, base_date: str, tracked_after_sale_days: int
         RETURNING (xmax = 0) AS inserted
     """)
     with engine.begin() as conn:
-        new = sum(1 for r in conn.execute(sql, {"d": base_date, "keep": tracked_after_sale_days}) if r.inserted)
+        written = conn.execute(sql, {"d": base_date, "keep": tracked_after_sale_days}).all()
+        new = sum(1 for r in written if r.inserted)
         total, tracked = conn.execute(text(
             "SELECT count(*), count(*) FILTER (WHERE is_tracked) FROM market.product")).one()
-    return {"total": total, "tracked": tracked, "new": new}
+    return {"total": total, "tracked": tracked, "new": new, "changed": len(written)}
 
 
 def get_price_targets(engine: Engine, codes: list[str] | None = None) -> list[dict]:

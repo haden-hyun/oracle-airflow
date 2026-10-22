@@ -13,14 +13,17 @@ from datetime import timedelta
 from airflow.sdk import task
 from airflow.sdk.exceptions import AirflowFailException
 
+from asset_flow.assets import MV_COST_BASIS_KRW, MV_POSITION_DAILY
 
-@task(task_id="refresh_dashboard_views", trigger_rule="all_done", retries=1, retry_delay=timedelta(seconds=30))
+
+@task(task_id="refresh_dashboard_views", trigger_rule="all_done", retries=1, retry_delay=timedelta(seconds=30),
+      outlets=[MV_POSITION_DAILY, MV_COST_BASIS_KRW])
 def refresh_dashboard_views() -> None:
     """
     Purpose: 대시보드 MV 갱신 (적재 직후 화면 반영)
     Parameter: 없음
     Input: config dashboard.refresh_procedure
-    Output: 없음 (+ 프로시저 CALL: MV 갱신·갱신 기록). 실패 시 예외 → 알림
+    Output: 없음 (+ 프로시저 CALL: MV 갱신·갱신 기록, MV Asset 이벤트). 실패 시 예외 → 알림
     """
     import time
 

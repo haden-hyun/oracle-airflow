@@ -13,7 +13,7 @@ from airflow.sdk import Param, dag, get_current_context, task
 from airflow.sdk.exceptions import AirflowSkipException
 
 from alerts import discord_failure_callback, discord_recovery_callback
-from asset_flow.assets import ASSET_DAILY, mark
+from asset_flow.assets import ASSET_DAILY, FUND_PRICE, MANUAL_LEDGER, mark
 from asset_flow.finalize import finalize
 from asset_flow.runtime import KST, kst_today
 
@@ -68,7 +68,8 @@ def account_rebuild_ledger_assets():
 
         return sorted(a.id for a in load_secrets().active_accounts(*MANUAL_KINDS))
 
-    @task(task_id="rebuild_account", map_index_template="{{ account_id }}", outlets=[ASSET_DAILY])
+    @task(task_id="rebuild_account", map_index_template="{{ account_id }}", inlets=[MANUAL_LEDGER, FUND_PRICE],
+          outlets=[ASSET_DAILY])
     def rebuild_account(account_id: str) -> int:
         """
         Purpose: 수기 계좌 1개 날짜 범위 재계산·재적재
@@ -96,7 +97,8 @@ def account_rebuild_ledger_assets():
         result = rebuild_range(account_id, start, end, deps)
         if result.nav_missing:
             raise RuntimeError(f"[{account_id}] NAV 결측 {len(result.nav_missing)}일: {result.nav_missing}")
-        mark(ASSET_DAILY, rebuild=f"{start}~{end}", account_id=account_id, days=result.processed)
+        mark(ASSET_DAILY, data_date=end.isoformat(), rows=result.rows, data_from=start.isoformat(),
+             data_to=end.isoformat(), account_id=account_id, rebuild=f"{start}~{end}", days=result.processed)
         return result.processed
 
     finalize(rebuild_account.expand(account_id=list_manual_accounts()))
