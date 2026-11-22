@@ -4,7 +4,8 @@
 - 진입점: load_app_config() → AppConfig (pydantic strict, frozen)
 - 경로: env ASSET_FLOW_CONFIG (기본 /opt/airflow/dags/config/asset_flow.yaml)
 - 내용: 적재 테이블, 펀드코드, 수기 계좌 유형별 product_code·multiplier, 만료 알림 규칙, 대시보드 갱신 프로시저,
-        시세 수집(price_ingest), 배당 수집(dividend), 기준 데이터 수집(reference_ingest)
+        시세 수집(price_ingest), 배당 수집(dividend), 기준 데이터 수집(reference_ingest),
+        수기 원장 입력 검증(manual_ledger)
 - yaml 과 이 모델은 같은 커밋으로 배포 (extra=forbid — 한쪽만 바뀌면 모든 DAG 의 설정 로드 실패)
 """
 
@@ -100,6 +101,10 @@ class ReferenceIngest(_Strict):
     market_index: MarketIndexIngest
 
 
+class ManualLedger(_Strict):
+    change_warn_ratio: float = Field(gt=0)      # 예적금 누계 직접 입력이 직전 대비 ±이 비율 넘게 변하면 경고
+
+
 class AppConfig(_Strict):
     tables: Tables
     funds: Funds
@@ -109,6 +114,7 @@ class AppConfig(_Strict):
     price_ingest: PriceIngest
     dividend: Dividend
     reference_ingest: ReferenceIngest
+    manual_ledger: ManualLedger
 
 
 def load_app_config(path: str | os.PathLike | None = None) -> AppConfig:

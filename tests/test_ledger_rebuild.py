@@ -46,10 +46,39 @@ def test_check_ledger_date_first_entry_of_new_account():
     (300_000, None, 1_200_000, 1_500_000),   # 입금: 직전 누계 + 입금금액
     (300_000, None, None, 300_000),          # 첫 입력: 입금금액이 곧 누계
     (None, 2_000_000, 1_200_000, 2_000_000), # 누계 직접 입력 (잔액 맞추기)
-    (None, 1_000_000, 1_200_000, 1_000_000), # 누계 감소는 경고만 — 값은 그대로
+    (None, 1_200_000, 1_200_000, 1_200_000), # 직전과 같은 누계
+    (None, 500_000, None, 500_000),          # 첫 입력 누계 직접
 ])
 def test_cash_total(deposit, total, prev, expected):
     assert lr.cash_total(deposit, total, prev, None, None) == expected
+
+
+def test_cash_total_blocks_decrease_unless_allowed():
+    # 2026-10-20 청년주택드림 10.78M → 1.8M 뒤바뀐 입력: 감소는 명시 허용 없이 저장 안 됨
+    with pytest.raises(ValueError, match="직전 10,780,000 → 입력 1,800,000.*allow_decrease=true"):
+        lr.cash_total(None, 1_800_000, 10_780_000, None, None)
+    assert lr.cash_total(None, 1_800_000, 10_780_000, None, None, allow_decrease=True) == 1_800_000
+
+
+@pytest.mark.parametrize("prev,new,warn", [
+    (1_300_000, 10_800_000, True),    # 2026-10-20 청년미래적금 뒤바뀐 입력 (+731%)
+    (10_780_000, 1_800_000, True),    # 감소 (-83%)
+    (1_000_000, 1_500_000, False),    # +50% 경계 = 경고 아님
+    (1_000_000, 500_000, False),      # -50% 경계
+    (1_000_000, 1_500_001, True),
+    (1_000_000, 499_999, True),
+    (None, 10_800_000, False),        # 첫 입력
+    (0, 300_000, False),              # 직전 누계 0
+])
+def test_cash_change_warning(prev, new, warn):
+    w = lr.cash_change_warning(prev, new, 0.50)
+    assert (w is not None) == warn
+    if warn:
+        assert f"직전 {prev:,.0f} → 입력 {new:,.0f}" in w
+
+
+def test_change_warn_ratio_from_config(app):
+    assert app.manual_ledger.change_warn_ratio == 0.50
 
 
 @pytest.mark.parametrize("deposit,total,qty,evaluation,msg", [
@@ -157,6 +186,7 @@ def test_upsert_dag_rebuilds_after_upsert():
     assert {"validate", "upsert", "rebuild_from_ledger"} <= set(t)
     assert t["rebuild_from_ledger"].upstream_task_ids == {"validate", "upsert"}
     assert dag.params["allow_backdate"] is False
+    assert dag.params["allow_decrease"] is False
 
 
 def test_upsert_dag_serial_and_dashboard_access():
@@ -182,7 +212,7 @@ def _fields(embed):
 def test_entry_embed_cash_deposit_with_later_rows():
     e = lr.entry_embed("청년미래적금", "manual_cash",
                        {"account_id": "INSTALLMENT_SAVINGS", "standard_date": "2026-09-15",
-                        "holding_quantity": None, "total_purchase_amount": 1_500_000},
+                        "holding_quantity": None, "total_purchase_amount": 1_500_000, "previous_total": 1_200_000},
                        {"deposit_amount": 300_000}, {"old": 1_200_000, "new": 1_500_000, "adjusted": 2}, 30,
                        "dashboard__INSTALLMENT_SAVINGS__2026-09-15__ab")
     f = _fields(e)
@@ -191,10 +221,31 @@ def test_entry_embed_cash_deposit_with_later_rows():
     assert f["이후 기록"] == "2건 +300,000원" and f["재계산"] == "30일" and f["입력"] == "대시보드"
 
 
+def test_entry_embed_cash_shows_previous_total_not_same_day_old():
+    # 같은 날 정정: upsert old(그날 기존값 9,000,000) 가 아니라 기준일 직전 누계를 보여 줌
+    payload = {"account_id": "HOUSING_SUBSCRIPTION", "standard_date": "2026-10-20",
+               "holding_quantity": None, "total_purchase_amount": 10_780_000, "previous_total": 10_000_000}
+    f = _fields(lr.entry_embed("청년주택드림", "manual_cash", payload, {},
+                               {"old": 9_000_000, "new": 10_780_000, "adjusted": 0}, None, "manual__x"))
+    assert f["총 납입액"] == "10,000,000 → 10,780,000원" and "납입액" not in f and "이후 기록" not in f
+    first = _fields(lr.entry_embed("청년주택드림", "manual_cash", payload | {"previous_total": None}, {},
+                                   {"old": 0, "new": 10_780_000, "adjusted": 0}, None, "manual__x"))
+    assert first["총 납입액"] == "10,780,000원"
+
+
+def test_entry_embed_cash_payload_without_previous_total():
+    # 배포 전에 시작된 run 의 XCom 에는 previous_total 키가 없다 → 첫 입력처럼 새 누계만
+    payload = {"account_id": "HOUSING_SUBSCRIPTION", "standard_date": "2026-10-20",
+               "holding_quantity": None, "total_purchase_amount": 10_780_000}
+    f = _fields(lr.entry_embed("청년주택드림", "manual_cash", payload, {},
+                               {"old": 10_000_000, "new": 10_780_000, "adjusted": 0}, None, "manual__x"))
+    assert f["총 납입액"] == "10,780,000원"
+
+
 def test_entry_embed_fund_today():
     e = lr.entry_embed("저축IRP", "manual_fund",
                        {"account_id": "IRP", "standard_date": "2026-10-21",
-                        "holding_quantity": 1308807.0, "total_purchase_amount": 2_249_600},
+                        "holding_quantity": 1308807.0, "total_purchase_amount": 2_249_600, "previous_total": None},
                        {"evaluation_amount": 2_300_000}, {}, None, "manual__2026-10-21")
     f = _fields(e)
     assert f["좌수"] == "1,308,807좌" and f["납입원금"] == "2,249,600원"

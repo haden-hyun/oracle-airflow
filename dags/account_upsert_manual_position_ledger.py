@@ -3,7 +3,7 @@
 
 - Param account_id = secrets 수기 계좌 id (계좌번호는 태스크 안에서 secrets 로 해석)
 - validate: 날짜 검증 → IRP·DC 는 좌수 × NAV × multiplier 대조(당일이면 자릿수 검증),
-  적금·청약은 입금금액 → 누계 계산(또는 누계 직접 입력, 감소는 경고)
+  적금·청약은 입금금액 → 누계 계산(또는 누계 직접 입력: 감소는 allow_decrease 없으면 실패, ±50% 넘는 변동은 경고)
 - upsert: account.manual_position_ledger UPSERT (XCom 에는 계좌 id 와 입력값만). 적금·청약은 이후 행 누계도 조정
 - 대시보드(dashboard_owner 계정)가 REST API 로 트리거 — 권한은 이 DAG 만 (access_control)
 - rebuild_from_ledger: 그 계좌만 기준일 ~ 정기 DAG 최종 계산일 재계산 (과거 날짜 입력이 즉시 반영)
@@ -33,7 +33,7 @@ API 가 없는 수기 자산의 포지션을 앱 화면을 보고 입력하는 �
 
 | Task | 내용 |
 |---|---|
-| `validate` | 정기 적재 시간 차단 → 계좌 id 해석·활성 확인 → 날짜 검증 → IRP·DC NAV 대조 또는 자릿수 검증 / 적금·청약 누계 계산·감소 경고. 재계산 예정 범위 로그 |
+| `validate` | 정기 적재 시간 차단 → 계좌 id 해석·활성 확인 → 날짜 검증 → IRP·DC NAV 대조 또는 자릿수 검증 / 적금·청약 누계 계산·감소 차단·큰 변동 경고. 재계산 예정 범위 로그 |
 | `upsert` | 같은 `(standard_date, account_code)` 재입력은 오타 정정으로 덮어씀. 적금·청약은 그날 누계 변화분을 이후 원장 행에 가산 |
 | `rebuild_from_ledger` | 그 계좌만 기준일 ~ min(asset_daily 최대 기준일, 어제) 재계산. 범위가 비면 skip, NAV 결측일이 있으면 나머지 적재 후 실패 |
 | `report_entry` | 반영 알림: 계좌·기준일·입력값·누계 변화(예적금)·재계산 일수. 앞 단계 실패면 실행 안 함(실패 알림이 따로 감) |
@@ -47,7 +47,8 @@ API 가 없는 수기 자산의 포지션을 앱 화면을 보고 입력하는 �
 
 **적금·청약 입력** (둘 중 하나만)
 - `deposit_amount`(입금금액): 새 누계 = 기준일 직전 누계 + 입금금액. 같은 날 여러 번 입금은 합계로 입력
-- `total_purchase_amount`(누계 직접): 잔액 맞추기. 직전보다 줄면 경고만
+- `total_purchase_amount`(누계 직접): 잔액 맞추기. 직전보다 줄면 실패 — 중도 인출·해지·정정이면 `allow_decrease=true`.
+  직전 대비 ±50%(config `manual_ledger.change_warn_ratio`) 넘게 변하면 경고 로그 (계좌 뒤바뀜 의심)
 - 과거 날짜 입력·정정 → 그날 누계 변화분을 이후 원장 행 전부에 가산
 
 정기 실행(06:50~07:30) 중에 시작한 validate·upsert·rebuild_from_ledger 는 실패한다 (같은 계좌·날짜 동시 쓰기).
@@ -139,6 +140,8 @@ def _resolve(account_id: str):
                                    description="[검증용] 앱 > 평가금액. 저장 안 됨. 비우면 매입원금 검증"),
         "deposit_amount": Param(None, type=["null", "number"], section="예적금",
                                 description="입금금액. 새 누계 = 직전 누계 + 입금금액. 같은 날 여러 번 입금은 합계로 입력"),
+        "allow_decrease": Param(False, type="boolean", section="예적금",
+                                description="누계 직접 입력이 직전 누계보다 작아도 허용 (중도 인출·해지·정정)"),
     },
 )
 def account_upsert_manual_position_ledger():
@@ -155,12 +158,13 @@ def account_upsert_manual_position_ledger():
         Purpose: 입력값 검증 후 원장 저장값 생성
         Parameter: 없음
         Input: Params, secrets·config 파일, account_master, asset_daily, fund_price_daily, 원장
-        Output: {account_id, standard_date, holding_quantity, total_purchase_amount} (계좌번호 미포함).
-                검증 실패 시 ValueError
+        Output: {account_id, standard_date, holding_quantity, total_purchase_amount, previous_total}
+                (계좌번호 미포함). 검증 실패 시 ValueError
         """
         from asset_flow import db_manager as db
         from asset_flow.app_config import load_app_config
-        from asset_flow.pipeline.ledger_rebuild import cash_total, check_ledger_date, check_run_window, rebuild_end
+        from asset_flow.pipeline.ledger_rebuild import (
+            cash_change_warning, cash_total, check_ledger_date, check_run_window, rebuild_end)
 
         check_run_window(datetime.now(KST))
         p = get_current_context()["params"]
@@ -176,7 +180,8 @@ def account_upsert_manual_position_ledger():
             raise ValueError(f"[{acct.id}] account_master 에 활성 계좌 없음")
 
         # 날짜 오타 차단 + 재계산 예정 범위 안내
-        table, today, day = load_app_config().tables.asset_daily, kst_today(), date.fromisoformat(standard_date)
+        app = load_app_config()
+        table, today, day = app.tables.asset_daily, kst_today(), date.fromisoformat(standard_date)
         data_start, latest = db.get_asset_date_bounds(engine, table.db_schema, table.table_name)
         mode = check_ledger_date(day, today, data_start, db.get_ledger_dates(engine, acct.account_code),
                                  p["allow_backdate"])
@@ -184,6 +189,7 @@ def account_upsert_manual_position_ledger():
         plan = f"{day} ~ {end}" if end and day <= end else "없음 (정기 DAG 가 새 원장으로 계산)"
         print(f"[날짜 검증 통과] {mode} / 재계산 예정: {acct.id} {plan}")
 
+        prev = None
         if acct.kind == "manual_fund":
             if qty is None or qty <= 0:
                 raise ValueError(f"[{acct.id}] holding_quantity 는 양수 필수 입력이다")
@@ -203,14 +209,15 @@ def account_upsert_manual_position_ledger():
                 print(f"[검증 통과] 계산 {expected:,.0f} ≈ 입력 {evaluation:,.0f} (오차 {diff:.2%})")
         else:
             prev = db.get_previous_ledger_amount(engine, acct.account_code, standard_date)
-            purchase = cash_total(deposit, purchase, prev, qty, evaluation)
+            purchase = cash_total(deposit, purchase, prev, qty, evaluation, p["allow_decrease"])
             base = "없음(첫 입력)" if prev is None else f"{prev:,.0f}"
             how = f"입금 {deposit:,.0f}" if deposit is not None else "누계 직접 입력"
-            print(f"[누계] 직전 {base} → 새 누계 {purchase:,.0f} ({how})")
-            if prev is not None and purchase < prev:
-                print(f"[경고] 납입원금 누계 감소: 직전 {prev:,.0f} → 입력 {purchase:,.0f}")
+            print(f"[누계] {acct.display_name}: 직전 {base} → 새 누계 {purchase:,.0f} ({how})")
+            ratio = app.manual_ledger.change_warn_ratio
+            if deposit is None and (warning := cash_change_warning(prev, purchase, ratio)):
+                print(f"[경고] {acct.display_name}: {warning}")
         return {"account_id": acct.id, "standard_date": standard_date,
-                "holding_quantity": qty, "total_purchase_amount": purchase}
+                "holding_quantity": qty, "total_purchase_amount": purchase, "previous_total": prev}
 
     @task(task_id="upsert", inlets=[SOURCE_MANUAL], outlets=[MANUAL_LEDGER])
     def upsert(payload: dict) -> dict:
@@ -232,12 +239,11 @@ def account_upsert_manual_position_ledger():
         if acct.kind == "manual_fund":
             db.upsert_ledger(db.asset_engine(), row)
         else:
-            # 이 태스크만 clear 해 다시 돌리면 validate 때의 직전 누계로 계산한 값이 남아 있다 → 그사이 바뀌었으면 새로 입력
-            deposit = get_current_context()["params"].get("deposit_amount")
-            if deposit is not None:
-                prev = db.get_previous_ledger_amount(db.asset_engine(), acct.account_code, payload["standard_date"]) or 0
-                if abs(prev + deposit - payload["total_purchase_amount"]) > 0.005:
-                    raise ValueError(f"직전 누계가 검증 뒤 바뀜 ({prev:,.0f}) — validate 부터 다시 실행하거나 새로 입력")
+            # 이 태스크만 clear 해 다시 돌리면 validate 때의 직전 누계로 검증·계산한 값이 남아 있다 → 그사이 바뀌었으면 새로 입력
+            prev = db.get_previous_ledger_amount(db.asset_engine(), acct.account_code, payload["standard_date"])
+            checked = payload.get("previous_total")
+            if (prev is None) != (checked is None) or (prev is not None and abs(prev - checked) > 0.005):
+                raise ValueError(f"직전 누계가 검증 뒤 바뀜 ({prev or 0:,.0f}) — validate 부터 다시 실행하거나 새로 입력")
             old, new, adjusted = db.upsert_cash_ledger(db.asset_engine(), row)
             result = {"old": old, "new": new, "adjusted": adjusted}
             print(f"[누계 반영] 그날 기존 {old:,.0f} → {new:,.0f}, 이후 원장 {adjusted}행 {new - old:+,.0f} 조정")

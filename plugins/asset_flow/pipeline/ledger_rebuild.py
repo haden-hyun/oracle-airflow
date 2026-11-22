@@ -3,7 +3,8 @@
 
 - check_run_window: 정기 적재(06:50~07:30 KST) 중 실행 차단
 - check_ledger_date: 원장 입력 기준일 검증 (미래·수집 이전 차단, 과거 원장 사이 끼워 넣기는 명시 허용)
-- cash_total: 적금·청약 입력(입금금액 또는 누계) → 그날 누계
+- cash_total: 적금·청약 입력(입금금액 또는 누계) → 그날 누계 (누계 직접 입력 감소는 allow_decrease 없으면 차단)
+- cash_change_warning: 누계 직접 입력이 직전 누계 대비 임계값 넘게 변하면 경고 문구
 - rebuild_end: 재계산 종료일 = 정기 DAG 가 마지막으로 계산한 날 (어제 이하)
 - rebuild_range: 계좌 1개를 날짜 범위로 재계산·재적재
 - entry_embed: 원장 반영 알림 embed (upsert DAG 성공 알림)
@@ -70,7 +71,7 @@ def check_ledger_date(standard_date: date, today: date, data_start: date | None,
 
 
 def cash_total(deposit: float | None, total: float | None, prev: float | None,
-               qty: float | None, evaluation: float | None) -> float:
+               qty: float | None, evaluation: float | None, allow_decrease: bool = False) -> float:
     """
     Purpose: 적금·청약 입력 검증 + 그날 누적 납입원금 계산
     Parameter:
@@ -79,6 +80,7 @@ def cash_total(deposit: float | None, total: float | None, prev: float | None,
         - prev: 기준일 미포함 직전 원장 누계 (없으면 None = 첫 입력)
         - qty: holding_quantity (예적금은 비워야 함)
         - evaluation: evaluation_amount (예적금은 비워야 함)
+        - allow_decrease: 누계 직접 입력이 직전 누계보다 작아도 허용 (중도 인출·해지·정정)
     Input: 없음
     Output: 그날 누계 = 직전 누계 + 입금금액, 또는 직접 입력한 누계. 규칙 위반이면 ValueError
     """
@@ -92,7 +94,28 @@ def cash_total(deposit: float | None, total: float | None, prev: float | None,
         return (prev or 0) + deposit
     if total < 0:
         raise ValueError(f"total_purchase_amount 는 음수일 수 없다: {total}")
+    if prev is not None and total < prev and not allow_decrease:
+        raise ValueError(f"누계 감소: 직전 {prev:,.0f} → 입력 {total:,.0f} — "
+                         "중도 인출·해지·정정이면 allow_decrease=true 로 다시 실행")
     return total
+
+
+def cash_change_warning(prev: float | None, new: float, ratio: float) -> str | None:
+    """
+    Purpose: 누계 직접 입력 변동률 경고 (계좌 뒤바뀜·자릿수 오타 의심)
+    Parameter:
+        - prev: 기준일 미포함 직전 원장 누계 (없으면 None = 첫 입력)
+        - new: 입력한 누계
+        - ratio: 경고 임계 변동률 (config manual_ledger.change_warn_ratio)
+    Input: 없음
+    Output: |new/prev − 1| > ratio 면 경고 문구, 아니면 None. 첫 입력·직전 누계 0 이하는 None
+    """
+    if prev is None or prev <= 0:
+        return None
+    change = new / prev - 1
+    if abs(change) <= ratio:
+        return None
+    return f"누계 {change:+.0%} 변동: 직전 {prev:,.0f} → 입력 {new:,.0f} — 계좌·금액 확인"
 
 
 def rebuild_end(latest_asset_date: date | None, today: date) -> date | None:
@@ -148,7 +171,8 @@ def entry_embed(name: str, kind: str, payload: dict, params: dict, written: dict
     Parameter:
         - name: 계좌 표시명 (secrets display_name)
         - kind: manual_fund / manual_cash
-        - payload: validate 결과 {account_id, standard_date, holding_quantity, total_purchase_amount}
+        - payload: validate 결과 {account_id, standard_date, holding_quantity, total_purchase_amount,
+                   previous_total(예적금 직전 누계, 첫 입력·펀드는 None)}
         - params: DAG Params (deposit_amount·evaluation_amount 원 입력값)
         - written: upsert 결과 (예적금 {old, new, adjusted}, 펀드 {})
         - rebuilt: 재계산 일수 (skip 이면 None)
@@ -169,7 +193,9 @@ def entry_embed(name: str, kind: str, payload: dict, params: dict, written: dict
     else:
         if (deposit := params.get("deposit_amount")) is not None:
             fields.append(field("납입액", won(deposit)))
-        fields.append(field("총 납입액", f"{written['old']:,.0f} → {won(written['new'])}"))
+        prev = payload.get("previous_total")
+        fields.append(field("총 납입액",
+                            won(written["new"]) if prev is None else f"{prev:,.0f} → {won(written['new'])}"))
         if written["adjusted"]:
             fields.append(field("이후 기록", f"{written['adjusted']}건 {written['new'] - written['old']:+,.0f}원"))
     fields.append(field("재계산", f"{rebuilt}일" if rebuilt else "내일 아침"))

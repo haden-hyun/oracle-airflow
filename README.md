@@ -222,12 +222,15 @@ airflow/
 | `deposit_amount` | 비움 (입력 시 실패) | 입금금액 — 새 누계 = 기준일 직전 누계 + 입금금액 |
 | `evaluation_amount` | 평가금액 (검증용, 미저장) | 비움 (입력 시 실패) |
 | `allow_backdate` | 최신 원장일보다 과거 입력 시만 `true` | 같음 |
+| `allow_decrease` | — | 누계 직접 입력이 직전 누계보다 작을 때만 `true` (중도 인출·해지·정정) |
 
-- 성공 알림(`report_entry`, 재계산 뒤 MV 갱신과 나란히, 알림 오류는 run 을 실패시키지 않음): 계좌·기준일·입력값·총 납입액 변화(예적금)·이후 기록 조정·재계산 일수·입력 경로(대시보드/Airflow UI). 앞 단계 실패면 실패 알림만
+- 성공 알림(`report_entry`, 재계산 뒤 MV 갱신과 나란히, 알림 오류는 run 을 실패시키지 않음): 계좌·기준일·입력값·총 납입액 변화(예적금, 기준일 직전 누계 → 새 누계)·이후 기록 조정·재계산 일수·입력 경로(대시보드/Airflow UI). 앞 단계 실패면 실패 알림만
 - 같은 `(standard_date, account_id)` 재실행 = 덮어쓰기 (오타 정정) → 같은 날 여러 번 입금은 **합계**로 입력
 - 적금·청약
   - `deposit_amount`·`total_purchase_amount` 둘 다 / 둘 다 없음 / `deposit_amount <= 0` → 실패
-  - 첫 입력(원장 없음)은 입금금액이 곧 누계, 누계 직접 입력으로 줄면 경고만
+  - 첫 입력(원장 없음)은 입금금액이 곧 누계
+  - 누계 직접 입력이 기준일 직전 누계보다 작으면 실패 → 중도 인출·해지·정정이면 `allow_decrease=true` 로 다시 실행
+  - 누계 직접 입력이 직전 누계 대비 ±50%(`manual_ledger.change_warn_ratio`) 넘게 변하면 경고 로그만 (계좌 뒤바뀜·자릿수 오타 의심, 저장은 진행)
   - 그날 누계가 바뀌면 `새 누계 − 기존 누계`(그날 행, 없으면 직전 행)를 이후 원장 행 전부에 가산 (한 트랜잭션) → 과거 날짜 입력·정정도 이후 누계와 일관
     - 가정: 이후 행은 모두 앞 누계를 이월한 값. 이후 행을 앱 총액으로 직접 맞춰 넣었다면(그 입금이 이미 포함) 같은 차이가 한 번 더 더해진다 → 그런 행이 있으면 과거 입금 대신 그 행들을 총 납입액으로 정정
     - 조정 후 이후 행 누계가 음수가 되면 실패(전체 롤백)
@@ -279,6 +282,7 @@ airflow/
 | `manual_asset_types` | 수기 유형 product_code·multiplier |
 | `credential_check` | 키 만료 알림 규칙 |
 | `dashboard.refresh_procedure` | MV 갱신 프로시저명 |
+| `manual_ledger` | `change_warn_ratio` 0.50 — 예적금 누계 직접 입력 변동 경고 임계 |
 | `price_ingest` | `lookback_days` 365 · `refetch_trading_days` 5 · `tracked_after_sale_days` 30 · `fund_nav_enabled` true |
 | `dividend` | 조회 창(`windows`) · `receipt_kinds` · `us_withholding_rate` 0.15 · `extra_kr_codes` · `refresh_dashboard_views` false |
 

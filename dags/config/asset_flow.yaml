@@ -57,3 +57,6 @@ reference_ingest:                            # market_ingest_reference_daily (�
     from_date: 2025-10-13                    # 신규 지수 첫 적재일 (보유 종목 시세 시작일과 맞춤)
     refetch_trading_days: 5                  # 매일 최근 n 거래일 재수집 (정정·누락)
     refresh_dashboard_views: false           # 지수가 대시보드 MV 에 들어가면 true
+
+manual_ledger:                               # account_upsert_manual_position_ledger (수동)
+  change_warn_ratio: 0.50                    # 예적금 누계 직접 입력이 직전 대비 ±50% 넘게 변하면 경고 (계좌 뒤바뀜 의심)
