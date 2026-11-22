@@ -30,3 +30,6 @@ secrets/*
 *.tgz
 .ruff_cache/
 .pytest_cache/
+
+# 에이전트 작업 상태 (oh-my-claudecode)
+.omc/
