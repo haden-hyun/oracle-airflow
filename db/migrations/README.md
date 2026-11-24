@@ -48,7 +48,7 @@ docker compose exec -T airflow-scheduler sh -c 'psql "$AIRFLOW_CONN_POSTGRES_ASS
 | `003_dividend_column_names` | 배당 컬럼명 표준화 (`per_share_dividend_amount` · `dividend_type` · `exchange_rate`) | — | 2026-10-14 |
 | `004_market_index_daily` | `market.index_daily` (코스피·코스닥·S&P 500·나스닥 종합 일봉) | `market_ingest_reference_daily` `market_index` (06:55) | 2026-10-17 |
 | `005_exchange_rate_column_names` | 환율 `symbol` → `source_symbol`, `source`·`update_datetime` 추가 / 펀드 PK 이름 `fund_price_daily_pkey` | — (대시보드와 동시 배포) | 2026-10-17 |
-| `006_ppd_upbit_kst_comment` | `market.product_price_daily` 가상자산 컬럼 COMMENT → KST 자정 종가 정의 | — | 미적용 |
+| `006_ppd_upbit_kst_comment` | `market.product_price_daily` 가상자산 컬럼 COMMENT → KST 자정 종가 정의 | — | 2026-11-24 |
 
 - 001 이전 테이블(asset_daily·fund_price_daily·exchange_rate_daily 등)은 이 디렉터리에 정의 없음
   - 예: `market.trading_holiday` = 대시보드 저장소 `db/migrations/006` (002 머리 주석)
