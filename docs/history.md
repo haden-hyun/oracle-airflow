@@ -41,3 +41,18 @@
 - 변경: 기준일 d 가격 = d+1 00:00 KST 직전 체결가 (60분봉), 잔고·시세 공통, source 라벨 `UPBIT_DAY` 유지
 - 경로: 잔고 `get_daily_candles` → `get_kst_closes`, 시세 `/v1/candles/days` → `/v1/candles/minutes/60` + `kst_day_ohlc` (KST 일별 집계)
 - 시세 지연 판정의 CRYPTO +1일 허용 제거 (07:10 에 T-1 이미 마감)
+- 운영 반영 (11-24 23시대)
+  - ppd 백업 `market.product_price_daily_upbit_bak_20261125` 808행 → 시세 DAG 수동 run(REST, logical_date 11-22 12:00 — 11-23 asset_daily 결측으로 센서 우회)으로 BTC·ETH 2025-10-13~11-23 407행씩 재작성
+  - `scripts/oneoff/2026-11-25_upbit_kst_reprice.sql`: CRYPTO 590행 재평가(수량·매입 불변, 평가액 평균 −0.04%, 일별 −12.9~+10.4%) + UPBIT 11-18·22·23 9행 복구, 백업 `account.asset_daily_crypto_bak_20261125`
+  - 11-22·23 은 다음 정상일 행이 없어 현재 잔고 = 11-21 을 API 로 확인하고 `asset_fix.upbit_live_verified` 로 적용
+
+## 2026-11-25 — KIS asset_daily 빈 날 복구 (11-18·22·23)
+
+- `scripts/oneoff/2026-11-25_kis_asset_daily_fill.sql`: 5계좌 88행, 수량 이어쓰기 × 그날 가격
+  - 11-18 = 11-17 (11-19 와 보유 동일), 11-22·23 = 11-21 (현재 잔고와 동일, 11월 체결 0건)
+  - 가격: 주식 = 그날 이하 마지막 종가 (정상 적재 4일 STOCK 전 행으로 규칙 검증), 펀드 = 그날 기준가 × 좌수 (KIS 평가액과 ±1원)
+  - 연금 펀드 현재 잔고 좌수 차이는 CTRP6548R 이 11-24 기준가로 평가한 착시 (비율 = NAV 11-24/11-23)
+- 제외 (사용자 결정): 중개형ISA 11-18 예수금(48,291원 또는 0원 불명), CMA 11-22·23 (11-21 0원 → 11-24 330,023원, 입금일 불명)
+- 선행: 시세 KR·US 11-21~23 수동 run, 지수 `market_index` 그룹 수동 run (11-23 까지)
+- KIS 11-22·23 행은 다음 정상일이 없어 `asset_fix.kis_live_verified` 로 적용 → `dashboard.refresh_views()`
+- 백업 2개는 2026-12-09 이후 DROP

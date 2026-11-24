@@ -4,6 +4,7 @@
 --   1) 새 코드 배포 (get_kst_closes · get_hour_candles · kst_day_ohlc)
 --   2) ppd 백업 market.product_price_daily_upbit_bak_20261125 (UPBIT_DAY 전 행) 후 재작성
 --   3) 시세 DAG 수동 run 으로 ppd BTC·ETH 2025-10-13 ~ asset_daily CRYPTO 최신일 재작성 완료
+--   4) 11-23 이후 UPBIT 행이 없으면: 현재 잔고(/v1/accounts) = 11-21 행 확인 후 앞에 `SET asset_fix.upbit_live_verified = on;`
 -- 내용
 --   - 백업: account.asset_daily_crypto_bak_20261125 (CRYPTO 행 전부, 이미 있으면 덮지 않음)
 --   - 복구: UPBIT 11-18 = 11-17 행, 11-22·11-23 = 11-21 행 복사 (그날 UPBIT 행이 있으면 건너뜀). CASH 는 그대로
@@ -72,9 +73,13 @@ BEGIN
 
     SELECT min(standard_date) INTO next_date FROM account.asset_daily
      WHERE account_code = 'UPBIT' AND standard_date > '2026-11-23';
-    IF next_date IS NULL THEN
-        RAISE EXCEPTION 'UPBIT 11-23 이후 행 없음 — 11-21 ↔ 다음 날 보유 대조 불가';
+    IF next_date IS NULL AND current_setting('asset_fix.upbit_live_verified', true) IS DISTINCT FROM 'on' THEN
+        RAISE EXCEPTION 'UPBIT 11-23 이후 행 없음 — 현재 잔고 = 11-21 확인 후 SET asset_fix.upbit_live_verified = on';
     END IF;
+    IF next_date IS NULL THEN
+        RAISE NOTICE 'UPBIT 11-21 ↔ 현재 잔고 대조(적용 전 확인)로 진행';
+        diff := 0;
+    ELSE
     SELECT count(*) INTO diff FROM (
         (SELECT product_code, holding_quantity, unit_purchase_price, total_evaluation_amount * (asset_type = 'CASH')::int
            FROM account.asset_daily WHERE account_code = 'UPBIT' AND standard_date = '2026-11-21'
@@ -88,6 +93,7 @@ BEGIN
          SELECT product_code, holding_quantity, unit_purchase_price, total_evaluation_amount * (asset_type = 'CASH')::int
            FROM account.asset_daily WHERE account_code = 'UPBIT' AND standard_date = '2026-11-21')
     ) d;
+    END IF;
     IF diff > 0 THEN
         RAISE EXCEPTION 'UPBIT 11-21 ↔ % 보유 불일치 %행 — 11-22·23 복구 불가', next_date, diff;
     END IF;
