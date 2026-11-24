@@ -5,6 +5,7 @@
 - fetch_all: KOFIA 조회 병렬 실행 (응답 지연이 생겨도 펀드 수만큼 늘지 않게)
 - collect_fund_prices: 코드별 KOFIA 조회(병렬) → 빠진 코드만 크롤러 (config funds.crawler_fallback)
 - compare_sources: KOFIA 적재값 ↔ 크롤러 값 대조 (config funds.shadow_compare, 전환 검증 기간용)
+- missing_dates / gap_records: 최근 1년 빈 날짜 보충 (fill_nav_gaps 본체, 매일 경로와 같은 nav_for_date 규칙)
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ log = logging.getLogger(__name__)
 
 LOOKBACK_DAYS = 20          # 조회 창 — 추석·설 연휴(최장 10일)에도 직전 기준가가 창 안에 있게
 PRICE_TOLERANCE = 0.005     # 대조 허용 오차 (원, 소수 둘째 자리 반올림)
+GAP_WINDOW_DAYS = 365       # 빈 날짜 보충 탐색 범위 (T-1 기준 과거 1년)
 
 
 def expected_nav_date(standard_date: dt.date, holidays: set[dt.date]) -> dt.date:
@@ -145,3 +147,70 @@ def compare_sources(kofia_records: list[dict], crawled: list[dict]) -> list[str]
     return [f"{r['product_code']} KOFIA {r['standard_price']} ≠ fundguide {got[r['product_code']]}"
             for r in kofia_records
             if r["product_code"] in got and abs(r["standard_price"] - got[r["product_code"]]) > PRICE_TOLERANCE]
+
+
+def missing_dates(loaded: set[dt.date], start: dt.date, end: dt.date) -> list[dt.date]:
+    """
+    Purpose: 적재 안 된 달력일 (주말·휴일 포함 — 매일 경로가 이월 행을 만들므로 모든 날에 행이 있어야 함)
+    Parameter:
+        - loaded: 이 펀드의 적재일
+        - start: 탐색 시작일 (포함)
+        - end: 탐색 종료일 (포함)
+    Input: 없음
+    Output: 빈 날짜 오름차순
+    """
+    days = (start + dt.timedelta(days=i) for i in range((end - start).days + 1))
+    return [d for d in days if d not in loaded]
+
+
+def gap_records(rows: list[dict], gaps: list[dt.date], code: str, name: str,
+                holidays: set[dt.date]) -> tuple[list[dict], list[dt.date]]:
+    """
+    Purpose: 빈 날짜별 기준가 레코드 (매일 경로와 같은 nav_for_date 규칙 — 주말·휴일은 직전 기준가 이월)
+    Parameter:
+        - rows: KOFIA 이력 (가장 이른 빈 날짜 - LOOKBACK_DAYS 부터 — 이월할 직전 기준가 포함)
+        - gaps: missing_dates 결과
+        - code: 펀드 표준코드
+        - name: 표시명
+        - holidays: KR 평일 휴장일
+    Input: 없음
+    Output: (fund_price_daily 레코드, 못 채운 날짜). KOFIA 첫 행(설정일 또는 조회 시작) 이전 날짜는 둘 다에서 제외
+    """
+    dates = [r["standard_date"] for r in rows if r.get("standard_date")]
+    if not dates:
+        return [], []
+    first = dt.datetime.strptime(min(dates), "%Y%m%d").date()
+    records, unfilled = [], []
+    for d in gaps:
+        if d < first:
+            continue
+        hit = nav_for_date(rows, d, holidays)
+        if hit is None:
+            unfilled.append(d)
+            continue
+        records.append({"standard_date": d.isoformat(), "product_code": code,
+                        "product_name": name, "standard_price": hit[0]})
+    return records, unfilled
+
+
+def gap_embed(filled: dict[str, list[str]], unfilled: dict[str, list[str]]) -> dict | None:
+    """
+    Purpose: 빈 날짜 보충 알림 embed (보충이 있을 때만 — 못 채운 날만 있으면 로그만, 매일 같은 경고 반복 방지)
+    Parameter:
+        - filled: {코드: 보충한 날짜 YYYY-MM-DD 오름차순}
+        - unfilled: {코드: KOFIA 에 값이 없어 못 채운 날짜}
+    Input: 없음
+    Output: Discord embed 또는 None (보충 0건)
+    """
+    if not filled:
+        return None
+    fields = [{"name": code, "value": f"{d[0]} ~ {d[-1]} · {len(d)}일 보충", "inline": False}
+              for code, d in filled.items()]
+    fields += [{"name": f"⚠ {code} 못 채움", "value": ", ".join(d[:10]) + (" …" if len(d) > 10 else ""),
+                "inline": False} for code, d in unfilled.items()]
+    lo, hi = min(d[0] for d in filled.values()), max(d[-1] for d in filled.values())
+    fields.append({"name": "수기 계좌(IRP·DC) 재계산",
+                   "value": f"account_rebuild_ledger_assets start_date={lo} end_date={hi}", "inline": False})
+    return {"title": "🩹 펀드 기준가 빈 날짜 보충", "color": 0x1E88E5,
+            "description": "market.fund_price_daily — KOFIA 이력으로 빈 날짜만 INSERT (기존 행 불변)",
+            "fields": fields}

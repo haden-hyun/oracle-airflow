@@ -3,7 +3,7 @@
 
 - 보유 자산과 무관한 시장 정보를 TaskGroup 3개로 독립 수집 (그룹 사이 의존 없음 — 한 그룹 실패가 다른 그룹을 막지 않음)
 - 공통 선행은 KIS 토큰 대기 하나 (환율·지수만, 펀드는 KOFIA)
-- 늦은 run skip 은 그룹별: 환율·펀드는 적용(현재값 API), 지수는 미적용(이력 API — 과거를 덮지 않음)
+- 늦은 run skip 은 그룹별: 환율·펀드 T-1 은 적용(현재값 API), 지수·펀드 빈 날짜 보충은 미적용(이력 API — 과거를 덮지 않음)
 - 후행: account_ingest_asset_daily (07:00, 환율·기준가 데이터 센서), 시세·배당 DAG
 - 토큰 발급 안 함 (06:50 auth_issue_api_tokens 발급분 사용)
 """
@@ -27,7 +27,7 @@ DAG_DOC = """
 | 그룹 | 적재 | 내용 |
 |---|---|---|
 | `exchange_rate` | `market.exchange_rate_daily` | USD·JPY·GBP·EUR 원화 환율 T-1 (달력일, 주말 = 직전 고시). 수동 `start_date` 면 이력 백필(빈 날만) |
-| `fund_price` | `market.fund_price_daily` | 연금저축·IRP·DC 펀드 T-1 기준가 (KOFIA, 없거나 지연된 코드만 fundguide) |
+| `fund_price` | `market.fund_price_daily` | 연금저축·IRP·DC 펀드 T-1 기준가 (KOFIA, 없거나 지연된 코드만 fundguide) + 최근 1년 빈 날짜 보충 |
 | `market_index` | `market.index_daily` | 코스피·코스닥·S&P 500·나스닥 종합 일봉 (거래일만, 최근 5거래일 재수집, 신규면 from_date 부터) |
 
 | Task | 내용 |
@@ -37,6 +37,7 @@ DAG_DOC = """
 | `exchange_rate.fetch/transform/upload_exchange_rates` | KIS 현재값 → 교차 환산 → 기준일 DELETE 후 INSERT |
 | `exchange_rate.backfill_exchange_rates` | `start_date`~`end_date` 이력 → 달력일 이월 → 빈 날만 INSERT (기존 행 불변) |
 | `fund_price.*` | 기준일 · 대상 코드 → 수집 → 적재 → 누락 점검 · 크롤러 대조 |
+| `fund_price.fill_nav_gaps` | 최근 365일 빈 달력일 → KOFIA 이력(주말·휴일 이월) → 빈 날만 INSERT · 보충 있으면 Discord (all_done — T-1 실패·늦은 run 에도 실행, 빈 날 없으면 호출 0) |
 | `market_index.plan_index_windows` | 지수별 창 (KR 상한 T-1, US 상한 = 마감된 마지막 미국 날짜) |
 | `market_index.collect_index_prices` | KIS 이력 조회 → 창 끝 거래일 행 검증 (없으면 실패·재시도) |
 | `market_index.upload_index_prices` | PK upsert (값이 바뀐 행만 update_datetime 갱신) |
@@ -353,11 +354,69 @@ def market_ingest_reference_daily():
                 raise RuntimeError(f"[{standard_date}] KOFIA ≠ fundguide {len(diff)}건: {diff}")
             print(f"[{standard_date}] 대조 {len(crawled)}/{len(kofia)}개 일치 (크롤링 실패 {len(kofia) - len(crawled)})")
 
+        @task(task_id="fill_nav_gaps", inlets=[SOURCE_KOFIA, TRADING_HOLIDAY], outlets=[FUND_PRICE],
+              trigger_rule="all_done", retries=2)
+        def fill_nav_gaps(codes: list[str]) -> dict:
+            """
+            Purpose: 최근 1년 기준가 빈 날짜 보충 (며칠 실패 후 자동 복구 — 빈 날짜만 INSERT, 기존 행 불변)
+            Parameter:
+                - codes: resolve_fund_codes 결과
+            Input: market.fund_price_daily·trading_holiday, KOFIA
+            Output: {"filled": {코드: [날짜]}, "unfilled": {코드: [날짜]}} (+ DB INSERT, 보충 있으면 Discord 1건).
+                    빈 날짜 없으면 KOFIA 호출 없음. 기준일은 get_standard_date 를 거치지 않음 — 늦은 run·T-1 실패에도
+                    동작 (KOFIA 는 이력 API 라 과거를 현재값으로 덮지 않음). KOFIA 조회 실패 코드가 있으면 RuntimeError
+            """
+            from datetime import date
+
+            from alerts import make_payload, post_discord
+            from asset_flow import db_manager as db
+            from asset_flow.clients.kofia_client import KofiaClient
+            from asset_flow.pipeline.fund_nav import (GAP_WINDOW_DAYS, LOOKBACK_DAYS, fetch_all, gap_embed,
+                                                      gap_records, missing_dates)
+
+            skip_unless_selected("fund_price")
+            end = date.fromisoformat(kst_run_end(get_current_context()).subtract(days=1).to_date_string())
+            start = end - timedelta(days=GAP_WINDOW_DAYS - 1)
+            engine = db.asset_engine()
+            loaded = db.get_fund_price_dates(engine, codes, start.isoformat())
+            gaps = {c: g for c in codes if (g := missing_dates(loaded.get(c, set()), start, end))}
+            if not gaps:
+                print(f"[{start}~{end}] 빈 날짜 없음 — KOFIA 호출 생략")
+                mark(FUND_PRICE, data_date=end.isoformat(), rows=0, data_from=start.isoformat(),
+                     data_to=end.isoformat())
+                return {"filled": {}, "unfilled": {}}
+
+            hol = db.get_holiday_sets(engine, (start - timedelta(days=LOOKBACK_DAYS)).isoformat(),
+                                      end.isoformat())["KR"]
+            names, kofia = db.get_fund_names(engine, list(gaps)), KofiaClient()
+            fetched = fetch_all(lambda c: kofia.get_fund_nav_history(
+                c, (gaps[c][0] - timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d"), end.strftime("%Y%m%d")), list(gaps))
+            filled, unfilled, errors = {}, {}, {}
+            for code, g in gaps.items():
+                if isinstance(fetched[code], Exception):
+                    errors[code] = type(fetched[code]).__name__
+                    continue
+                records, miss = gap_records(fetched[code], g, code, names.get(code) or code, hol)
+                if n := db.insert_missing_fund_prices(engine, records):
+                    filled[code] = [r["standard_date"] for r in records]
+                # T-1 지연은 check_fund_coverage 담당 — 여기선 그 이전 날짜만 못 채움으로 보고
+                if past := [d.isoformat() for d in miss if d < end]:
+                    unfilled[code] = past
+                print(f"[{code}] 빈 날짜 {len(g)}일 ({g[0]}~{g[-1]}) → 보충 {n}/{len(records)} · 못 채움 {past[:10]}")
+            if embed := gap_embed(filled, unfilled):
+                post_discord(make_payload(embed))
+            mark(FUND_PRICE, data_date=end.isoformat(), rows=sum(map(len, filled.values())),
+                 data_from=start.isoformat(), data_to=end.isoformat())
+            if errors:
+                raise RuntimeError(f"KOFIA 조회 실패 {errors} — 다음 재시도·다음 날 run 이 다시 보충")
+            return {"filled": filled, "unfilled": unfilled}
+
         std_date = get_standard_date()
         codes = resolve_fund_codes()
         collected = collect_fund_prices(std_date, codes)
-        upload_fund_prices(std_date, collected["records"]) >> [check_fund_coverage(std_date, codes),
-                                                               compare_with_fundguide(std_date, collected)]
+        upload = upload_fund_prices(std_date, collected["records"])
+        upload >> [check_fund_coverage(std_date, codes), compare_with_fundguide(std_date, collected)]
+        upload >> fill_nav_gaps(codes)                     # all_done — T-1 실패·skip 에도 보충
 
     @task_group(group_id="market_index")
     def market_index(token) -> None:

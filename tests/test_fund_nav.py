@@ -1,7 +1,7 @@
 import datetime as dt
 
 from asset_flow.pipeline.fund_nav import (collect_fund_prices, compare_sources, expected_nav_date, fetch_all,
-                                         nav_for_date)
+                                         gap_embed, gap_records, missing_dates, nav_for_date)
 
 D = dt.date
 HOL = {D(2026, 10, 5), D(2026, 10, 9), D(2025, 12, 31)}          # 대체공휴일 · 한글날 · KRX 연말휴장
@@ -194,3 +194,72 @@ def test_ingest_fund_nav_fetches_in_parallel(monkeypatch):
     windows = [Window(c, "2026-10-12", "2026-10-17", False) for c in ("A", "B")]
     res = ingest_source("FUND_NAV", products, windows, SimpleNamespace(engine=None), 0)
     assert res["rows"] == 1 and list(res["failed"]) == ["B"] and inserted[0]["product_code"] == "A"
+
+
+def _rows(*pairs):
+    """
+    Purpose: KOFIA 응답 행 생성
+    Parameter:
+        - pairs: (YYYYMMDD, 기준가)
+    Input: 없음
+    Output: get_fund_nav_history 형식 행 리스트
+    """
+    return [{"standard_date": d, "standard_price": str(p)} for d, p in pairs]
+
+
+def test_missing_dates_counts_weekends_and_holidays():
+    loaded = {D(2026, 11, 20), D(2026, 11, 21)}
+    assert missing_dates(loaded, D(2026, 11, 20), D(2026, 11, 23)) == [D(2026, 11, 22), D(2026, 11, 23)]
+    assert missing_dates({D(2026, 11, 20)}, D(2026, 11, 20), D(2026, 11, 20)) == []
+
+
+def test_gap_records_carries_friday_into_weekend():
+    # 2026-11-23·24 장애 재현: 11-22(일) = 11-20(금) 값 이월, 11-23(월) = 당일 값
+    rows = _rows(("20261119", 1590.0), ("20261120", 1600.0), ("20261123", 1610.0), ("20261124", 1620.0))
+    recs, miss = gap_records(rows, [D(2026, 11, 22), D(2026, 11, 23)], "K5X", "펀드", set())
+    assert [(r["standard_date"], r["standard_price"]) for r in recs] == [("2026-11-22", 1600.0), ("2026-11-23", 1610.0)]
+    assert recs[0] == {"standard_date": "2026-11-22", "product_code": "K5X", "product_name": "펀드",
+                       "standard_price": 1600.0}
+    assert miss == []
+
+
+def test_gap_records_matches_daily_path_rule():
+    # 휴일·12/31(KRX 휴장, 펀드 기준가는 있음) 포함 — 매일 경로(nav_for_date)와 같은 값
+    gaps = [D(2025, 12, 31), D(2026, 10, 5), D(2026, 10, 9), D(2026, 10, 11)]
+    recs, miss = gap_records(ROWS, gaps, "K5X", "펀드", HOL)
+    assert {r["standard_date"]: r["standard_price"] for r in recs} == \
+           {d.isoformat(): nav_for_date(ROWS, d, HOL)[0] for d in gaps}
+    assert miss == []
+
+
+def test_gap_records_skips_before_inception():
+    rows = _rows(("20260105", 1000.0), ("20260106", 1001.0))           # 설정일 2026-01-05
+    recs, miss = gap_records(rows, [D(2026, 1, 3), D(2026, 1, 4), D(2026, 1, 6)], "K5X", "펀드", set())
+    assert [r["standard_date"] for r in recs] == ["2026-01-06"] and miss == []
+    assert gap_records([], [D(2026, 1, 6)], "K5X", "펀드", set()) == ([], [])
+
+
+def test_gap_records_reports_business_day_missing_in_kofia():
+    rows = _rows(("20261120", 1600.0), ("20261124", 1620.0))           # 11-23(월) 공시 누락
+    recs, miss = gap_records(rows, [D(2026, 11, 22), D(2026, 11, 23)], "K5X", "펀드", set())
+    assert [r["standard_date"] for r in recs] == ["2026-11-22"] and miss == [D(2026, 11, 23)]
+
+
+def test_gap_embed_only_when_filled():
+    assert gap_embed({}, {}) is None
+    assert gap_embed({}, {"A": ["2026-11-23"]}) is None                # 못 채움만 → 로그만 (매일 반복 경고 방지)
+    e = gap_embed({"A": ["2026-11-22", "2026-11-23"], "B": ["2026-11-23"]}, {"B": ["2026-11-20"]})
+    values = [f["value"] for f in e["fields"]]
+    assert "2026-11-22 ~ 2026-11-23 · 2일 보충" in values and "2026-11-20" in values
+    assert values[-1] == "account_rebuild_ledger_assets start_date=2026-11-22 end_date=2026-11-23"
+
+
+def test_fill_nav_gaps_runs_after_upload_even_on_failure():
+    from test_finalize import _load_dag
+
+    t = _load_dag("market_ingest_reference_daily").task_dict
+    g = "fund_price."
+    fill = t[g + "fill_nav_gaps"]
+    assert fill.upstream_task_ids == {g + "resolve_fund_codes", g + "upload_fund_prices"}
+    assert fill.trigger_rule == "all_done" and not fill.downstream_task_ids
+    assert g + "get_standard_date" not in fill.upstream_task_ids       # 늦은 run skip 이 보충을 막지 않게

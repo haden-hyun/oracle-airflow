@@ -169,18 +169,23 @@ airflow/
 | 격리 | 상품 단위 — 실패 상품이 있으면 성공분 적재 후 태스크 실패 |
 | 수동 Param | `product_codes`(비우면 추적 종목) · `start_date` · `end_date` · `full_refresh` |
 
-### 펀드 기준가 (KOFIA 일원화, 2026-10-14)
+### 펀드 기준가 (KOFIA 일원화, 2026-10-14 · 빈 날짜 보충 이관 2026-11-24)
 
-| | 06:55 `market_ingest_reference_daily` `fund_price` | 07:10 시세 DAG `ingest_fund_nav` |
-|---|---|---|
-| 역할 | **자산 평가 입력 (T-1)** | 과거 빈 날짜 보충 (시세 드로어) |
-| 주 경로 | KOFIA 전자공시 XML (인증 없음, 기간 조회) | KOFIA |
-| 대체 | fundguide 크롤링 — KOFIA 값 없음·지연 코드만 (`funds.crawler_fallback`) | 없음 |
-| 쓰기 | 기준일·코드 DELETE 후 INSERT | `INSERT … ON CONFLICT DO NOTHING` (기존 행 불변) |
-| 스위치 | `funds.shadow_compare` = 매일 크롤러 값과 대조, 다르면 실패 알림 | `price_ingest.fund_nav_enabled` (true) |
+| | 06:55 `fund_price` T-1 경로 | 06:55 `fund_price.fill_nav_gaps` | 07:10 시세 DAG `ingest_fund_nav` |
+|---|---|---|---|
+| 역할 | **자산 평가 입력 (T-1)** | 최근 365일 빈 날짜 보충 (며칠 실패 후 자동 복구) | (구 보충 경로 — 꺼짐, 관찰 후 삭제) |
+| 주 경로 | KOFIA 전자공시 XML (인증 없음, 기간 조회) | KOFIA (빈 날 있는 펀드만 펀드당 1회) | KOFIA |
+| 대체 | fundguide 크롤링 — KOFIA 값 없음·지연 코드만 (`funds.crawler_fallback`) | 없음 | 없음 |
+| 쓰기 | 기준일·코드 DELETE 후 INSERT | `INSERT … ON CONFLICT DO NOTHING` (기존 행 불변) | 같음 (영업일만 — 주말 이월 행 없음) |
+| 실행 조건 | 늦은 정기 run 이면 skip | `all_done` — T-1 실패·skip·늦은 run 에도 실행 | `price_ingest.fund_nav_enabled` (**false**) |
+| 알림 | 실패 시 | **보충이 있을 때만** Discord 1건 (+ 수기 계좌 재계산 명령) | 실패 시 |
 
 - 기준일 값 = 기준일 이하 최신 KOFIA 기준가 (주말·휴일 이월). 마지막 영업일 값이 없으면 지연으로 보고 대체 경로
+- 보충도 같은 규칙(`nav_for_date`) → 매일 적재분과 사후 보충분이 같은 모양 (주말·휴일 포함 모든 달력일에 행)
+- 보충 알림을 받으면 IRP·DC `asset_daily` 는 `account_rebuild_ledger_assets` 로 그 범위 재계산 (KIS·업비트 계좌는 과거 잔고 API 없음 → 복구 불가)
+- 못 채운 날(KOFIA 에도 값 없음)은 로그만 — T-1 누락은 `check_fund_coverage` 가 실패 알림
 - 검증 끝나면(1~2주 불일치 0) `crawler_fallback`·`shadow_compare` 끄고 크롤러·Playwright 제거
+- 보충 이관 관찰(1~2주) 후 시세 DAG 의 FUND_NAV 경로(`ingest_fund_nav`·`price_plan` FUND_NAV 분기·`fund_nav_enabled`) 삭제
 
 ### 배당 DAG `account_ingest_dividend` (07:20)
 
@@ -309,7 +314,7 @@ airflow/
 | `credential_check` | 키 만료 알림 규칙 |
 | `dashboard.refresh_procedure` | MV 갱신 프로시저명 |
 | `manual_ledger` | `change_warn_ratio` 0.50 — 예적금 누계 직접 입력 변동 경고 임계 |
-| `price_ingest` | `lookback_days` 365 · `refetch_trading_days` 5 · `tracked_after_sale_days` 30 · `fund_nav_enabled` true |
+| `price_ingest` | `lookback_days` 365 · `refetch_trading_days` 5 · `tracked_after_sale_days` 30 · `fund_nav_enabled` false (보충은 06:55 `fill_nav_gaps`) |
 | `dividend` | 조회 창(`windows`) · `receipt_kinds` · `us_withholding_rate` 0.15 · `extra_kr_codes` · `refresh_dashboard_views` false |
 
 - 계좌 추가·해지(`enabled: false`)·키 교체 = secrets 만 수정
