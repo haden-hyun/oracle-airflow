@@ -38,6 +38,8 @@ docker compose down          # -v 금지 (메타 DB 삭제)
 docker compose restart airflow-scheduler airflow-dag-processor airflow-apiserver   # plugins/ 변경 후 필수
 ```
 
+- 평소 반영은 아래 [배포 절차](#배포-절차) 의 `scripts/deploy.sh`
+
 ### 변경 반영
 
 | 변경 | 반영 시점 | 할 일 |
@@ -45,9 +47,32 @@ docker compose restart airflow-scheduler airflow-dag-processor airflow-apiserver
 | `dags/*.py` | dag-processor 자동 재파싱 | 없음 |
 | `dags/config/*.yaml` · `secrets/*.yaml` | 다음 태스크 실행부터 (매번 다시 읽음) | 없음 |
 | **`plugins/**`** | **재시작 전까지 옛 모듈로 실행** (태스크 프로세스가 스케줄러에서 fork) | 위 `restart` 3종 필수 |
+| `Dockerfile` · `requirements.txt` · `docker-compose.yaml` | 재빌드·재생성 시 | `build` + `up -d` |
 | `db/migrations/*.sql` | 적용 시 | 사람이 컨테이너 psql 로 적용 |
 
 - 배포·재시작은 **05:50~08:00 KST 피함** (07:20 배당 DAG 센서가 최대 30분 대기 → 07:50 전후까지 실행)
+- 사고: 2026-10-14 · 2026-11-23~24 — plugins/ 변경 후 재시작 누락 → 옛 `AppConfig`(extra=forbid) 가 새 config 키 거부 → 정기 DAG 전부 실패
+
+### 배포 절차
+
+```bash
+git config core.hooksPath scripts/git-hooks   # 최초 1회 (clone 마다) — 훅 설치
+scripts/deploy.sh                             # fetch + merge --ff-only → 변경 범위만큼 재시작/재빌드 → 검증
+scripts/deploy.sh --check                     # 반영 없이 검증만 (언제든 안전)
+```
+
+- `deploy.sh` 순서: main 확인 → `merge --ff-only @{u}` → 변경 파일 판별(위 표) → 재시작/재빌드 → 검증
+  - 검증: 3종 healthy · 드리프트(plugins/·이미지 입력이 scheduler 기동보다 새로우면 실패) · `list-import-errors` · 새 프로세스로 `load_app_config()`
+  - 05:50~08:00 KST · 실행 중/대기 dag_run 있으면 반영하지 않고 경고 (`--force` 로 무시) · `--dry-run` 은 할 일만 출력
+- 훅 (`scripts/git-hooks/`, 메인 worktree 의 main 에서만 동작 — 한 스크립트, 나머지는 symlink)
+  - 아래 훅은 변경 범위만큼 `deploy.sh --range` **자동 실행** — 사람이 잊는 게 사고 원인이라 경고만으로는 부족
+  - `post-commit`: 라이브 트리 직접 커밋 (11-23 사고 경로) · amend · cherry-pick · revert — 직전 HEAD(`HEAD@{1}`) 기준
+  - `post-merge` · `post-rewrite`(rebase 만, amend 는 post-commit): `ORIG_HEAD` 기준
+  - `post-checkout`: 브랜치 전환 경고만 (라이브 작업 트리에서 checkout 금지)
+  - 자동 대신 경고만: `AIRFLOW_DEPLOY_HOOK=warn git commit|pull ...`
+  - 훅이 반영을 미룬 경우(금지 시간대 등) 안내된 `scripts/deploy.sh --range <이전> HEAD` 를 나중에 실행
+- plugins/ 편집 후 커밋 전이라도 `scripts/deploy.sh --check` 로 드리프트 확인 (파일 mtime > scheduler 기동 → 실패, 훅은 커밋 전 편집을 못 잡음)
+- 브랜치 작업은 별도 `git worktree` 에서, 라이브 트리에는 `scripts/deploy.sh`(또는 `git merge --ff-only`) 로만 반영
 
 ### `.env` (gitignore)
 
@@ -78,6 +103,7 @@ airflow/
 ├── secrets/                       # asset_flow.secrets.yaml (서버 전용) + example + README
 ├── db/migrations/                 # Airflow 소유 market·account DDL (사람이 적용)
 ├── tests/                         # pytest (순수 로직, Airflow 런타임 불필요)
+├── scripts/                       # deploy.sh (배포·검증) · git-hooks/ (core.hooksPath)
 ├── data/tokens/tokens.json        # KIS 토큰 캐시 (gitignore)
 └── Dockerfile · docker-compose.yaml · requirements.txt · .env
 ```
