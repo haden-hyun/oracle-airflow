@@ -3,17 +3,25 @@
 
 - 인증 엔드포인트는 요청마다 JWT 서명 (nonce=uuid4, 토큰 저장·재사용 없음)
 - 공개 엔드포인트(market/all, candles)는 인증 헤더 없음
-- 제공: get_balance / get_market_codes / get_daily_candles / get_api_keys / get_day_candles(기간, 시세 DAG)
+- 제공: get_balance / get_market_codes / get_api_keys / get_kst_closes(잔고 평가) / get_hour_candles(기간, 시세 DAG)
+- 가격 기준: 기준일 d = d+1 00:00 KST 직전 체결가 (60분봉, `to` 는 +09:00 명시)
 """
 
 from __future__ import annotations
 
+import logging
+import time
 import uuid
+from datetime import date, timedelta
 
 import jwt
 
 from asset_flow.clients.base_client import BaseApiClient
 from asset_flow.config.upbit import UPBIT
+
+log = logging.getLogger(__name__)
+
+STALE_CLOSE_DAYS = 7                                    # 종가 캔들이 T-1 보다 이 일수 넘게 오래되면 상폐·거래정지 의심
 
 
 class UpbitApiClient(BaseApiClient):
@@ -86,44 +94,49 @@ class UpbitApiClient(BaseApiClient):
         """
         return self._get("market_code", auth=False)
 
-    def get_daily_candles(self, markets: list[str], to_date: str) -> list:
+    def get_kst_closes(self, markets: list[str], base_date: str) -> list:
         """
-        Purpose: 마켓별 T-1 일 캔들 1개 조회
+        Purpose: 마켓별 T-1 KST 자정 종가 (60분봉 to=T 00:00+09:00, count 1)
         Parameter:
             - markets: 마켓 코드 리스트 (KRW-BTC 등)
-            - to_date: 상한일 (YYYY-MM-DD) — base_date(T) 를 넘기면 T-1 종가
+            - base_date: 실행일 T (YYYY-MM-DD)
         Input: Upbit API (공개)
-        Output: 마켓별 캔들 리스트
+        Output: 마켓별 60분봉 1개 리스트. 캔들이 T-1 이전이면 경고 후 그 캔들(직전 체결가) 사용.
+                응답이 비거나 T-1 보다 STALE_CLOSE_DAYS 일 넘게 오래되면 ValueError
         """
+        prev = date.fromisoformat(base_date) - timedelta(days=1)
         result = []
         for market in markets:
-            params = {"market": market, "to": f"{to_date}T00:00:00", "count": 1}
-            candles = self._get("daily_candle", auth=False, params=params)
-            if candles:
-                result.append(candles[0])
+            params = {"market": market, "to": f"{base_date}T00:00:00+09:00", "count": 1}
+            candles = self._get("hour_candle", auth=False, params=params)
+            if not candles:
+                raise ValueError(f"{market} {prev} 종가 캔들 없음")
+            kst = candles[0]["candle_date_time_kst"]
+            lag = (prev - date.fromisoformat(kst[:10])).days
+            if lag > STALE_CLOSE_DAYS:
+                raise ValueError(f"{market} 종가 캔들 {kst} — {prev} 보다 {lag}일 전 (상폐·거래정지 의심)")
+            if lag:
+                log.warning("[%s] %s 종가 캔들 %s (그 뒤 체결 없음) — 직전 체결가 사용", market, prev, kst)
+            result.append(candles[0])
         return result
 
-    def get_day_candles(self, market: str, start: str, end: str, interval: float = 0.35) -> list[dict]:
+    def get_hour_candles(self, market: str, start: str, end: str, interval: float = 0.35) -> list[dict]:
         """
-        Purpose: 마켓 1개의 일 캔들 기간 조회 (count 200 씩 to 를 당겨 반복, 공개 API)
+        Purpose: 마켓 1개의 KST start~end 60분봉 전부 (count 200 씩 to 를 당겨 반복)
         Parameter:
             - market: KRW-BTC 등
-            - start: 캔들 시작일(KST) YYYY-MM-DD (포함)
-            - end: 캔들 시작일(KST) YYYY-MM-DD (포함)
+            - start: KST 날짜 YYYY-MM-DD (포함)
+            - end: KST 날짜 YYYY-MM-DD (포함)
             - interval: 호출 간격 초 (기본 0.35)
         Input: Upbit API (공개)
-        Output: 원시 캔들 리스트 (최근→과거, start~end 만). 미마감 캔들 제거는 transformer 몫
+        Output: 원시 60분봉 리스트 (최근→과거). 일별 집계·미마감 제거는 kst_day_ohlc
         """
-        import time
-        from datetime import date, timedelta
-
-        # to 는 시간대 없으면 UTC. 일봉 d(KST) 시작 = d 00:00 UTC → end+1 00:00 UTC 이전 캔들부터
-        to = f"{date.fromisoformat(end) + timedelta(days=1)}T00:00:00"
+        to = f"{date.fromisoformat(end) + timedelta(days=1)}T00:00:00+09:00"
         rows = []
         while True:
             time.sleep(interval)
-            page = self._get("daily_candle", auth=False, params={"market": market, "count": 200, "to": to})
+            page = self._get("hour_candle", auth=False, params={"market": market, "count": 200, "to": to})
             rows += [c for c in page if start <= c["candle_date_time_kst"][:10] <= end]
-            if len(page) < 200 or page[-1]["candle_date_time_kst"][:10] <= start:
+            if len(page) < 200 or page[-1]["candle_date_time_kst"] <= f"{start}T00:00:00":
                 return rows
-            to = page[-1]["candle_date_time_utc"]
+            to = f"{page[-1]['candle_date_time_kst']}+09:00"

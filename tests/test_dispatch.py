@@ -114,17 +114,17 @@ class FakeUpbit:
         """
         return [{"market": "KRW-BTC", "korean_name": "비트코인"}, {"market": "BTC-ETH", "korean_name": "이더리움"}]
 
-    def get_daily_candles(self, markets, to_date):
+    def get_kst_closes(self, markets, base_date):
         """
-        Purpose: Upbit 일 캔들 응답
+        Purpose: Upbit T-1 KST 자정 종가 응답
         Parameter:
             - markets: 마켓 목록
-            - to_date: 캔들 경계일
+            - base_date: 실행일 T
         Input: 없음
         Output: list
         """
-        assert to_date == "2026-10-12"
-        return [{"market": "KRW-BTC", "trade_price": 120000000}]
+        assert (markets, base_date) == (["KRW-BTC"], "2026-10-12")
+        return [{"market": "KRW-BTC", "candle_date_time_kst": "2026-10-11T23:00:00", "trade_price": 120000000}]
 
 
 class FakeTokens:

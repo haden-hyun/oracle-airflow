@@ -201,7 +201,7 @@ def ingest_source(source: str, products: list[dict], windows: list[Window], deps
     Output: {"rows": 시세=upsert 요청 행 / 펀드=실제 INSERT 행, "products": 처리 수, "failed": {code: 사유}} (+ DB 쓰기)
     """
     from asset_flow import db_manager as db
-    from asset_flow.transformers.price_transformer import closed_upbit_candles, to_fund_frame, to_price_frame
+    from asset_flow.transformers.price_transformer import kst_day_ohlc, to_fund_frame, to_price_frame
 
     from asset_flow.pipeline.fund_nav import fetch_all
 
@@ -222,7 +222,7 @@ def ingest_source(source: str, products: list[dict], windows: list[Window], deps
                 n = db.insert_missing_fund_prices(deps.engine, df.to_dict("records"))
             else:
                 if source == "UPBIT_DAY":
-                    raw = closed_upbit_candles(raw)
+                    raw = kst_day_ohlc(raw)
                 df = to_price_frame(source, raw, p["product_code"], p["currency_code"], w.end)
                 validate_coverage(p, w, df)
                 n = db.upsert_product_prices(deps.engine, df.to_dict("records"))
@@ -263,7 +263,7 @@ def stale_products(targets: list[dict], end: date, holidays: dict[str, set[date]
         - targets: get_price_targets 행 (is_tracked, last_loaded, price_from_date)
         - end: 기대 상한 T-1
         - holidays: 평일 휴장일
-        - n: 허용 거래일 수 (CRYPTO 는 마감 지연 1일 추가 허용)
+        - n: 허용 거래일 수
     Input: 없음
     Output: "코드(마지막 적재일)" 리스트. 펀드는 06:55 check_fund_coverage 담당이라 제외
     """
@@ -271,7 +271,7 @@ def stale_products(targets: list[dict], end: date, holidays: dict[str, set[date]
     for p in targets:
         if p["price_source"] not in PRICE_SOURCES or not p.get("is_tracked"):
             continue
-        expected = recent_start(end, p["market"], holidays, n + (1 if p["market"] == "CRYPTO" else 0))
+        expected = recent_start(end, p["market"], holidays, n)
         if p.get("price_from_date") and p["price_from_date"] > expected:      # 상장 직후·0행 기록 상품
             continue
         if p.get("last_loaded") is None or p["last_loaded"] < expected:
@@ -320,7 +320,7 @@ def _fetcher(source: str, deps):
         from asset_flow.clients.upbit_client import UpbitApiClient
 
         upbit = UpbitApiClient("", "")                         # 공개 엔드포인트만 사용
-        return lambda p, s, e, i: upbit.get_day_candles(p["source_symbol"], s, e, i)
+        return lambda p, s, e, i: upbit.get_hour_candles(p["source_symbol"], s, e, i)
     if source == "FUND_NAV":
         from asset_flow.clients.kofia_client import KofiaClient
 

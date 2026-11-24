@@ -1,9 +1,10 @@
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from asset_flow.clients.kofia_client import KofiaClient
 from asset_flow.config.schemas import FUND_PRICE_COLUMNS, PRICE_COLUMNS
-from asset_flow.transformers.price_transformer import closed_upbit_candles, to_fund_frame, to_price_frame
+from asset_flow.transformers.price_transformer import kst_day_ohlc, to_fund_frame, to_price_frame
 
 KR_ROWS = [{"stck_bsop_date": "20261013", "stck_clpr": "4185", "stck_oprc": "4205", "stck_hgpr": "4205",
             "stck_lwpr": "4150", "acml_vol": "1040128"},
@@ -28,18 +29,67 @@ def test_us_drops_intraday_row():
     assert list(df["standard_date"]) == ["2026-10-12"] and df.loc[0, "closing_price"] == 340.97
 
 
-def test_upbit_open_candle_is_dropped_at_0710_kst():
-    now = datetime(2026, 10, 12, 22, 10, tzinfo=timezone.utc)          # 2026-10-13 07:10 KST
-    rows = [{"candle_date_time_utc": "2026-10-12T00:00:00"}, {"candle_date_time_utc": "2026-10-11T00:00:00"}]
-    assert closed_upbit_candles(rows, now) == rows[1:]
+def _hour(kst: str, o: float, h: float, lo: float, c: float, v: float) -> dict:
+    """
+    Purpose: 업비트 60분봉 1개 생성
+    Parameter:
+        - kst: 캔들 시작 KST (YYYY-MM-DDTHH:MM:SS)
+        - o: 시가
+        - h: 고가
+        - lo: 저가
+        - c: 종가(trade_price)
+        - v: 거래량
+    Input: 없음
+    Output: 원시 캔들 dict
+    """
+    return {"market": "KRW-BTC", "candle_date_time_kst": kst, "opening_price": o, "high_price": h, "low_price": lo,
+            "trade_price": c, "candle_acc_trade_volume": v}
 
 
-def test_upbit_closed_candle_frame():
-    rows = [{"candle_date_time_utc": "2026-10-11T00:00:00", "candle_date_time_kst": "2026-10-11T09:00:00",
-             "opening_price": 1.0, "high_price": 2.0, "low_price": 0.5, "trade_price": 1.5,
-             "candle_acc_trade_volume": 10.12345678}]
+AT_0710 = datetime(2026, 10, 12, 22, 10, tzinfo=timezone.utc)          # 2026-10-13 07:10 KST
+
+
+def test_kst_day_ohlc_close_is_2300_candle_and_skips_open_day():
+    rows = [_hour("2026-10-13T00:00:00", 9, 9, 9, 9, 1),                # 미마감 (07:10 현재)
+            _hour("2026-10-12T23:00:00", 5, 7, 4, 6, 0.1),
+            _hour("2026-10-12T00:00:00", 3, 5, 1, 4, 0.2),
+            _hour("2026-10-12T12:00:00", 4, 8, 2, 5, 0.3)]
+    assert kst_day_ohlc(rows, AT_0710) == [{"standard_date": "2026-10-12", "opening_price": 3, "highest_price": 8,
+                                            "lowest_price": 1, "closing_price": 6, "trading_volume": 0.6}]
+
+
+def test_kst_day_ohlc_includes_day_at_exact_midnight():
+    rows = [_hour("2026-10-12T23:00:00", 1, 1, 1, 2, 1)]
+    midnight = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)      # 2026-10-13 00:00 KST
+    assert [d["standard_date"] for d in kst_day_ohlc(rows, midnight)] == ["2026-10-12"]
+    assert kst_day_ohlc(rows, datetime(2026, 10, 12, 14, 59, tzinfo=timezone.utc)) == []
+
+
+def test_kst_day_ohlc_groups_days_and_dedups():
+    rows = [_hour("2026-10-11T23:00:00", 1, 1, 1, 2, 0.5), _hour("2026-10-11T23:00:00", 1, 1, 1, 2, 0.5),
+            _hour("2026-10-12T23:00:00", 3, 3, 3, 4, 1.0), _hour("2026-10-10T23:00:00", 5, 5, 5, 6, 2.0)]
+    out = kst_day_ohlc(rows, AT_0710)
+    assert [(d["standard_date"], d["closing_price"], d["trading_volume"]) for d in out] == [
+        ("2026-10-10", 6, 2.0), ("2026-10-11", 2, 0.5), ("2026-10-12", 4, 1.0)]
+
+
+def test_kst_day_ohlc_missing_hours_warns_before_22(caplog):
+    rows = [_hour("2026-10-12T21:00:00", 2, 2, 2, 3, 1), _hour("2026-10-12T01:00:00", 1, 1, 1, 1, 1),
+            _hour("2026-10-11T22:00:00", 1, 1, 1, 7, 1)]
+    with caplog.at_level(logging.WARNING):
+        out = kst_day_ohlc(rows, AT_0710)
+    assert [(d["standard_date"], d["opening_price"], d["closing_price"]) for d in out] == [
+        ("2026-10-11", 1, 7), ("2026-10-12", 1, 3)]
+    assert "2026-10-12 종가 캔들 21:00" in caplog.text and "2026-10-11" not in caplog.text
+
+
+def test_upbit_day_frame():
+    rows = kst_day_ohlc([_hour("2026-10-11T23:00:00", 1.0, 2.0, 0.5, 1.5, 10.12345678)], AT_0710)
     df = to_price_frame("UPBIT_DAY", rows, "BTC", "KRW", "2026-10-12")
-    assert (df.loc[0, "standard_date"], df.loc[0, "closing_price"], df.loc[0, "source"]) == ("2026-10-11", 1.5, "UPBIT_DAY")
+    assert df.to_dict("records") == [{
+        "standard_date": "2026-10-11", "product_code": "BTC", "opening_price": 1.0, "highest_price": 2.0,
+        "lowest_price": 0.5, "closing_price": 1.5, "trading_volume": 10.12345678, "currency_code": "KRW",
+        "source": "UPBIT_DAY"}]
 
 
 def test_fund_frame_drops_today_and_nonpositive():

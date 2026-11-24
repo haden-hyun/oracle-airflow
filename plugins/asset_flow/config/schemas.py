@@ -153,13 +153,6 @@ PRICE_RENAME: dict[str, dict[str, str]] = {
         "clos": "closing_price",
         "tvol": "trading_volume",
     },
-    "upbit_day_candle": {
-        "opening_price": "opening_price",
-        "high_price": "highest_price",
-        "low_price": "lowest_price",
-        "trade_price": "closing_price",
-        "candle_acc_trade_volume": "trading_volume",
-    },
 }
 
 

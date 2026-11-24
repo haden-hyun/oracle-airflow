@@ -232,7 +232,7 @@ def _kis_cma_cash(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
 
 def _upbit(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
     """
-    Purpose: Upbit 코인 잔고 × T-1 종가 + 원화 예수금
+    Purpose: Upbit 코인 잔고 × T-1 KST 자정 종가 + 원화 예수금
     Parameter:
         - acct: 계좌
         - dates: {standard_date, base_date}
@@ -244,7 +244,7 @@ def _upbit(acct: Account, dates: dict, deps: Deps) -> pd.DataFrame:
     upbit = UpbitApiClient(cred.app_key, cred.app_secret)
     balance = upbit.get_balance()
     markets = [f"KRW-{b['currency']}" for b in balance if b["currency"] != "KRW"]
-    prices = upbit.get_daily_candles(markets, to_date=dates["base_date"]) if markets else []
+    prices = upbit.get_kst_closes(markets, dates["base_date"]) if markets else []
     coins = transform_upbit_balance(balance, upbit.get_market_codes(), prices, dates["standard_date"],
                                     acct.account_code, acct.display_name)
     return _concat(coins, transform_upbit_deposit(balance, dates["standard_date"], acct.account_code,

@@ -3,7 +3,7 @@
 
 - asset_daily 비현금 상품 → market.product upsert (is_tracked = 보유 중 또는 매도 후 n일, config)
 - 창: min(마지막 적재일+1, 최근 5거래일 시작) ~ T-1, 신규면 T-365 ~ T-1
-- 소스: KIS 국내(FHKST03010100)·미국(HHDFS76240000) 원주가, 업비트 일봉, KOFIA 펀드 기준가(스위치, 빈 날짜만)
+- 소스: KIS 국내(FHKST03010100)·미국(HHDFS76240000) 원주가, 업비트 60분봉 → KST 일봉(종가 = 자정 직전), KOFIA 펀드 기준가(스위치, 빈 날짜만)
 - 선행: 토큰·T-1 asset_daily 데이터 센서 / 늦은 run skip 없음 (이력 API — 과거를 덮지 않음) / 토큰 발급 안 함
 """
 

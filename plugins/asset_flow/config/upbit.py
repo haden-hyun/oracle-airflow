@@ -13,5 +13,5 @@ class UPBIT:
         "balance": "/v1/accounts",
         "api_keys": "/v1/api_keys",
         "market_code": "/v1/market/all",
-        "daily_candle": "/v1/candles/days",
+        "hour_candle": "/v1/candles/minutes/60",
     }

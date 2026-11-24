@@ -3,6 +3,7 @@
 - 개인 자산·시장 데이터 수집·적재용 Airflow 3.3.2
 - 프로젝트 단위 구성: `plugins/<project>/` 라이브러리 + `dags/` DAG 파일
 - 현재 프로젝트: **asset-flow** (KIS·Upbit·KOFIA API + 수기 원장 → 일별 자산·시세·배당)
+- 변경·사고 이력: [docs/history.md](docs/history.md)
 
 ## 규칙
 
@@ -16,6 +17,7 @@
 - DAG 최상위(파싱 시점)에서 secrets·Variable·DB 접근 금지
 - 모든 함수 docstring `Purpose / Parameter / Input / Output` (`tests/test_style.py` 강제)
 - 스키마 변경 = `db/migrations/NNN_*.sql` (사람이 적용 → [db/migrations/README.md](db/migrations/README.md))
+- 적재 행 1회성 보정 = `scripts/oneoff/YYYY-MM-DD_*.sql` (`BEGIN`/`COMMIT` 한 파일, 재실행 안전, 가드 실패 시 `RAISE`, 적용법은 migrations 와 같음)
 
 ## 인프라
 
@@ -51,7 +53,6 @@ docker compose restart airflow-scheduler airflow-dag-processor airflow-apiserver
 | `db/migrations/*.sql` | 적용 시 | 사람이 컨테이너 psql 로 적용 |
 
 - 배포·재시작은 **05:50~08:00 KST 피함** (07:20 배당 DAG 센서가 최대 30분 대기 → 07:50 전후까지 실행)
-- 사고: 2026-10-14 · 2026-11-23~24 — plugins/ 변경 후 재시작 누락 → 옛 `AppConfig`(extra=forbid) 가 새 config 키 거부 → 정기 DAG 전부 실패
 
 ### 배포 절차
 
@@ -66,7 +67,7 @@ scripts/deploy.sh --check                     # 반영 없이 검증만 (언제�
   - 05:50~08:00 KST · 실행 중/대기 dag_run 있으면 반영하지 않고 경고 (`--force` 로 무시) · `--dry-run` 은 할 일만 출력
 - 훅 (`scripts/git-hooks/`, 메인 worktree 의 main 에서만 동작 — 한 스크립트, 나머지는 symlink)
   - 아래 훅은 변경 범위만큼 `deploy.sh --range` **자동 실행** — 사람이 잊는 게 사고 원인이라 경고만으로는 부족
-  - `post-commit`: 라이브 트리 직접 커밋 (11-23 사고 경로) · amend · cherry-pick · revert — 직전 HEAD(`HEAD@{1}`) 기준
+  - `post-commit`: 라이브 트리 직접 커밋 · amend · cherry-pick · revert — 직전 HEAD(`HEAD@{1}`) 기준
   - `post-merge` · `post-rewrite`(rebase 만, amend 는 post-commit): `ORIG_HEAD` 기준
   - `post-checkout`: 브랜치 전환 경고만 (라이브 작업 트리에서 checkout 금지)
   - 자동 대신 경고만: `AIRFLOW_DEPLOY_HOOK=warn git commit|pull ...`
@@ -103,7 +104,8 @@ airflow/
 ├── secrets/                       # asset_flow.secrets.yaml (서버 전용) + example + README
 ├── db/migrations/                 # Airflow 소유 market·account DDL (사람이 적용)
 ├── tests/                         # pytest (순수 로직, Airflow 런타임 불필요)
-├── scripts/                       # deploy.sh (배포·검증) · git-hooks/ (core.hooksPath)
+├── scripts/                       # deploy.sh (배포·검증) · git-hooks/ (core.hooksPath) · oneoff/ (1회성 보정 SQL)
+├── docs/history.md                # 변경·사고 이력
 ├── data/tokens/tokens.json        # KIS 토큰 캐시 (gitignore)
 └── Dockerfile · docker-compose.yaml · requirements.txt · .env
 ```
@@ -165,11 +167,25 @@ airflow/
 |---|---|
 | 상품 목록 | asset_daily 비현금 상품 → `market.product` upsert, `is_tracked` = 보유 중 또는 매도 후 30일 |
 | 수집 창 | 신규 T-365~T-1 / 기존 [마지막 적재일+1 ∪ 최근 5거래일] ~ T-1 |
-| 소스 | `KIS_KR_DAILY`(FHKST03010100) · `KIS_US_DAILY`(HHDFS76240000) 원주가, `UPBIT_DAY` 일봉, `FUND_NAV`(KOFIA, 스위치) |
+| 소스 | `KIS_KR_DAILY`(FHKST03010100) · `KIS_US_DAILY`(HHDFS76240000) 원주가, `UPBIT_DAY` 60분봉 → KST 일봉 (아래), `FUND_NAV`(KOFIA, 스위치) |
 | 격리 | 상품 단위 — 실패 상품이 있으면 성공분 적재 후 태스크 실패 |
 | 수동 Param | `product_codes`(비우면 추적 종목) · `start_date` · `end_date` · `full_refresh` |
 
-### 펀드 기준가 (KOFIA 일원화, 2026-10-14 · 빈 날짜 보충 이관 2026-11-24)
+### Upbit 가격 기준 (잔고·시세 공통)
+
+- 기준일 d 가격 = **d+1 00:00 KST 직전 체결가** (KIS 의 "T 아침에 T-1 종가" 와 같은 흐름)
+- 00:00~07:00 체결은 보정 안 함 (07:00 잔고 수량 × 00:00 가격)
+
+| 적재 | API | 값 |
+|---|---|---|
+| `asset_daily` CRYPTO `unit_market_price` | 60분봉 `to=T 00:00+09:00`, count 1 (`get_kst_closes`) | T-1 체결 없으면 경고 후 직전 체결가, 7일 넘게 오래됐거나 응답 없으면 실패 (상폐·거래정지 의심) |
+| `product_price_daily` `UPBIT_DAY` | 60분봉 기간 조회 (`get_hour_candles`, 200개씩) → `kst_day_ohlc` | KST 날짜별 시가(첫 캔들)·고가·저가·종가(마지막 캔들)·거래량 합, d+1 00:00 지난 날만 |
+
+- 07:10 에 T-1 이 이미 마감 → 당일 적재 (지연 허용 없음)
+- 거래 없는 시간: 그날 마지막 캔들 종가 사용, 그 캔들이 22:00 전 시작이면 경고 로그
+- 두 경로 정의가 같아 `asset_daily.unit_market_price` = 같은 날 `product_price_daily.closing_price`
+
+### 펀드 기준가
 
 | | 06:55 `fund_price` T-1 경로 | 06:55 `fund_price.fill_nav_gaps` | 07:10 시세 DAG `ingest_fund_nav` |
 |---|---|---|---|
@@ -233,7 +249,7 @@ airflow/
 | `kis_domestic_stock` | ISA 국내 주식 + 예수금 `DEPOSIT` |
 | `kis_pension_fund` | 연금저축: 펀드(평가금액 ÷ NAV) + 국내 주식 + 예수금 `DEPOSIT` |
 | `kis_cma_cash` | CMA 현금 (ISA 키 공유) |
-| `upbit` | 코인 잔고 × T-1 종가 + 원화 예수금 `DEPOSIT`(balance + locked) |
+| `upbit` | 코인 잔고 × T-1 KST 자정 종가 ([기준](#upbit-가격-기준-잔고시세-공통)) + 원화 예수금 `DEPOSIT`(balance + locked) |
 | `manual_fund` | IRP·DC: 원장 좌수 × NAV × multiplier |
 | `manual_cash` | 적금·청약: 원장 원금 이월 |
 
@@ -281,7 +297,7 @@ airflow/
 - 대시보드 '데이터 › 흐름' 탭도 이 계정으로 `/api/v2/dags`·`/dags/~/dagRuns`·`/dags/~/dagRuns/~/taskInstances`·`/assets`·`/assets/events` 를 읽는다
 - 권한 = 전체 DAG·Asset **읽기** + 이 DAG 만 **쓰기**(트리거)
   - DAG 단위: 코드 `access_control` (`DAGs` read·edit, `DAG Runs` read·create) — 역할이 없으면 DAG import 오류
-  - 전역 읽기 `DAGs`·`Assets`·`Asset Aliases`·`Task Instances`·`Task Logs`·`DAG Runs`: 흐름 탭·태스크·로그 조회용 (2026-10-22 추가 `DAGs`·`Assets`·`Asset Aliases` — `GET /assets` 는 Alias 읽기도 확인)
+  - 전역 읽기 `DAGs`·`Assets`·`Asset Aliases`·`Task Instances`·`Task Logs`·`DAG Runs`: 흐름 탭·태스크·로그 조회용 (`GET /assets` 는 `Asset Aliases` 읽기도 필요)
   - 전역 `can_edit`·`can_create` 는 주지 않는다 — FAB 는 트리거에 `DAGs` edit + `DAG Runs` create 를 함께 확인 → 다른 DAG POST dagRuns 403
 - 메타 DB 상태라 새로 만들 때 (Airflow 4 에서 `access_control` 제거 예정 — 그때 재검토):
 

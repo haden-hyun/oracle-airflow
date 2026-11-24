@@ -1,7 +1,7 @@
 """
 Upbit API 원시 응답 → 도메인 DataFrame 변환 (순수 함수)
 
-- transform_upbit_balance(): 잔고 + 마켓 한글명 + T-1 일 캔들 종가 병합 (KRW 잔고 제외)
+- transform_upbit_balance(): 잔고 + 마켓 한글명 + T-1 KST 자정 종가 병합 (KRW 잔고 제외)
 - transform_upbit_deposit(): KRW 잔고(balance + 주문 대기 locked) → 예수금 1행, 0원이면 행 없음
 """
 
@@ -18,11 +18,11 @@ def transform_upbit_balance(
     balance_raw: list, market_code_raw: list, price_raw: list, standard_date: str, account_code: str, account_name: str
 ) -> pd.DataFrame:
     """
-    Purpose: Upbit 보유 코인 평가 (수량 × T-1 종가)
+    Purpose: Upbit 보유 코인 평가 (수량 × T-1 KST 자정 종가)
     Parameter:
         - balance_raw: /v1/accounts 응답
         - market_code_raw: /v1/market/all 응답
-        - price_raw: /v1/candles/days 응답 (T-1 종가)
+        - price_raw: get_kst_closes 결과 (market, trade_price)
         - standard_date: 기준일
         - account_code: 계좌 코드 ('UPBIT')
         - account_name: 표시명

@@ -21,7 +21,7 @@ secrets 의 활성 계좌별 T-1 잔고·평가금액을 `account.asset_daily` �
 
 | Task | 내용 |
 |---|---|
-| `get_standard_date` | standard_date(T-1, 적재 레이블) / base_date(T, Upbit 캔들 경계) |
+| `get_standard_date` | standard_date(T-1, 적재 레이블) / base_date(T, Upbit 종가 = T 00:00 KST 직전 체결가) |
 | `wait_for_exchange_rate` / `wait_for_fund_price_daily` | 기준일 환율 4종·필요 펀드 기준가가 DB 에 생길 때까지 대기 (30초 간격, 최대 10분) |
 | `list_accounts` | secrets 활성 계좌 **id** 목록 (XCom 에 계좌번호 없음) |
 | `collect_account` (매핑, 이름=계좌 id) | kind 별 수집(종목 + 예수금) → 0건 · 전날 보유 종목이 0건이면 실패 → 계좌·기준일 스코프 DELETE+INSERT |

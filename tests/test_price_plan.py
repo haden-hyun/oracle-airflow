@@ -95,6 +95,11 @@ def test_stale_products():
     assert stale_products(targets, end, HOL) == ["161510(2026-10-02)"]
 
 
+def test_crypto_stale_has_no_extra_day():
+    btc = _p(product_code="BTC", market="CRYPTO", price_source="UPBIT_DAY", last_loaded=date(2026, 10, 9))
+    assert stale_products([btc], date(2026, 10, 12), HOL) == ["BTC(2026-10-09)"]       # 기대 = T-1 − 2일
+
+
 def test_fund_window_skipped_when_no_trading_day_missing():
     w = Window("K553W5E17401", "2026-10-02", "2026-10-12", False)
     full = {date(2026, 10, d) for d in range(2, 13)}
