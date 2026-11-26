@@ -33,3 +33,6 @@ secrets/*
 
 # 에이전트 작업 상태 (oh-my-claudecode)
 .omc/
+
+# Understand-Anything 지식 그래프 산출물
+.ua/
