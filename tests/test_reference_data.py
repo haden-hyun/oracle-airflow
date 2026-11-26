@@ -258,3 +258,16 @@ def test_reference_config(app):
     m = app.reference_ingest.market_index
     assert m.from_date == date(2025, 10, 13) and m.refetch_trading_days == 5 and not m.refresh_dashboard_views
     assert app.tables.index_daily.table_name == "index_daily"
+
+
+def test_exchange_rate_retry_budget():
+    # 11-19 KIS OPSQ0008 약 6분 지속 — fetch 재시도가 07:00 wait_for_exchange_rate(600초) 안에서 그 이상 버티게
+    from datetime import timedelta
+
+    from test_finalize import _load_dag
+
+    t = _load_dag("market_ingest_reference_daily").task_dict
+    fetch = t["exchange_rate.fetch_exchange_rates"]
+    assert fetch.retries == 5 and fetch.retry_delay == timedelta(seconds=30)
+    assert fetch.max_retry_delay == timedelta(minutes=2)
+    assert t["exchange_rate.transform_exchange_rates"].retries == 0       # 같은 응답 재변환은 무의미

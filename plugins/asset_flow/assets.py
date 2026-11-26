@@ -29,7 +29,6 @@ MV_COST_BASIS_KRW = Asset("dashboard.mv_cost_basis_krw", uri="asset://dashboard/
 SOURCE_KIS = Asset("source.kis", uri="asset://source/kis", group="source")
 SOURCE_UPBIT = Asset("source.upbit", uri="asset://source/upbit", group="source")
 SOURCE_KOFIA = Asset("source.kofia", uri="asset://source/kofia", group="source")
-SOURCE_FUNDGUIDE = Asset("source.fundguide", uri="asset://source/fundguide", group="source")
 SOURCE_KASI = Asset("source.kasi", uri="asset://source/kasi", group="source")
 SOURCE_MANUAL = Asset("source.manual", uri="asset://source/manual", group="source")
 

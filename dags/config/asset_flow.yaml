@@ -13,8 +13,6 @@ tables:
 funds:
   pension_fund_code: K553W5E17401            # kind=kis_pension_fund 기본값 (계좌별 fund_code 로 override)
   crawl_codes: [K553W5E17401, K55105D43299]  # 항상 수집 (계좌·유형 펀드는 런타임에 합집합)
-  crawler_fallback: true                     # KOFIA 에 없는 코드만 fundguide 크롤링 (크롤러 제거 전까지)
-  shadow_compare: true                       # 전환 검증: 매일 크롤러 값과 대조, 다르면 실패 알림
 
 manual_asset_types:                          # 키 = account_master.account_type
   IRP:                  {product_code: K55105D43299, multiplier: 0.001}

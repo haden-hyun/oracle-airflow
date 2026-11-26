@@ -135,3 +135,37 @@ def test_overseas_price_cuts_rows_before_start(monkeypatch):
     kis = _client(monkeypatch, [FakeResp({"rt_cd": "0", "output2": rows})], [])
     out = kis.get_overseas_daily_price("NAS", "AAPL", "20261010", "20261012")
     assert [r["xymd"] for r in out] == ["20261012"]
+
+
+def _fx_ok(name):
+    """
+    Purpose: 정상 환율 응답 (FHKST03030100)
+    Parameter:
+        - name: 통화쌍 이름
+    Input: 없음
+    Output: FakeResp
+    """
+    return FakeResp({"rt_cd": "0", "msg_cd": "MCA00000", "output1": {"hts_kor_isnm": name}, "output2": []})
+
+
+def test_exchange_rate_error_response_raises_in_fetch(monkeypatch):
+    # 2026-11-19 사고 재현: EUR 만 rt_cd=1 OPSQ0008 (output1 없음)
+    err = FakeResp({"rt_cd": "1", "msg_cd": "OPSQ0008", "msg1": "호출 후처리(MCI전송) 오류 입니다."})
+    kis = _client(monkeypatch, [_fx_ok("원/달러"), _fx_ok("원/엔"), _fx_ok("달러/파운드"), err], [])
+    with pytest.raises(KisApiError) as e:
+        kis.get_exchange_rate("2026-11-18", ["FX@KRWKFTC", "FX@KRWJS", "FX@GBP", "FX@EUR"])
+    assert e.value.msg_cd == "OPSQ0008" and "FX@EUR" in str(e.value) and "MCI전송" in str(e.value)
+
+
+def test_exchange_rate_missing_output1_raises(monkeypatch):
+    kis = _client(monkeypatch, [FakeResp({"rt_cd": "0", "msg_cd": "MCA00000", "output2": []})], [])
+    with pytest.raises(RuntimeError, match="FX@KRWKFTC output1 없음"):
+        kis.get_exchange_rate("2026-11-18", ["FX@KRWKFTC"])
+
+
+def test_exchange_rate_ok_returns_bodies(monkeypatch):
+    calls = []
+    kis = _client(monkeypatch, [_fx_ok("원/달러"), _fx_ok("원/엔")], calls)
+    out = kis.get_exchange_rate("2026-11-18", ["FX@KRWKFTC", "FX@KRWJS"])
+    assert [r["output1"]["hts_kor_isnm"] for r in out] == ["원/달러", "원/엔"]
+    assert calls[0][1]["FID_INPUT_DATE_1"] == calls[0][1]["FID_INPUT_DATE_2"] == "20261118"

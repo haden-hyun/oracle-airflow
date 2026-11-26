@@ -1,11 +1,11 @@
 """
-펀드 기준가 수집 (market_ingest_reference_daily fund_price 그룹 본체) — KOFIA 주 경로 + fundguide 크롤러 대체 경로
+펀드 기준가 수집 (market_ingest_reference_daily fund_price 그룹 본체) — KOFIA 단일 소스
 
 - nav_for_date: KOFIA 기준일 이력 → 기준일 값 (T-1 이하 최신 기준가 = 주말·휴일 이월, 지연이면 None)
 - fetch_all: KOFIA 조회 병렬 실행 (응답 지연이 생겨도 펀드 수만큼 늘지 않게)
-- collect_fund_prices: 코드별 KOFIA 조회(병렬) → 빠진 코드만 크롤러 (config funds.crawler_fallback)
-- compare_sources: KOFIA 적재값 ↔ 크롤러 값 대조 (config funds.shadow_compare, 전환 검증 기간용)
+- collect_fund_prices: 코드별 KOFIA 조회(병렬) → 기준일 레코드 (값 없는 코드는 빠짐 → check_fund_coverage 알림)
 - missing_dates / gap_records: 최근 1년 빈 날짜 보충 (fill_nav_gaps 본체, 매일 경로와 같은 nav_for_date 규칙)
+- date_runs / gap_embed: 보충 알림 (흩어진 빈 날은 연속 구간별 재계산 안내)
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from asset_flow.config.kofia import KOFIA
 log = logging.getLogger(__name__)
 
 LOOKBACK_DAYS = 20          # 조회 창 — 추석·설 연휴(최장 10일)에도 직전 기준가가 창 안에 있게
-PRICE_TOLERANCE = 0.005     # 대조 허용 오차 (원, 소수 둘째 자리 반올림)
 GAP_WINDOW_DAYS = 365       # 빈 날짜 보충 탐색 범위 (T-1 기준 과거 1년)
+MAX_ALERT_RUNS = 5          # 보충 알림에 나열할 재계산 구간 수 (나머지는 "외 n구간")
 
 
 def expected_nav_date(standard_date: dt.date, holidays: set[dt.date]) -> dt.date:
@@ -93,60 +93,38 @@ def fetch_all(fetch, keys: list, workers: int = KOFIA.MAX_WORKERS) -> dict:
 
 
 def collect_fund_prices(codes: list[str], standard_date: str, names: dict[str, str], holidays: set[dt.date],
-                        kofia, crawl=None) -> tuple[list[dict], dict[str, str]]:
+                        kofia) -> tuple[list[dict], dict[str, str]]:
     """
-    Purpose: 기준일 펀드 기준가 레코드 수집 (KOFIA 먼저, 빠진 코드만 크롤러)
+    Purpose: 기준일 펀드 기준가 레코드 수집 (KOFIA)
     Parameter:
         - codes: 대상 펀드 표준코드
         - standard_date: 기준일 YYYY-MM-DD
         - names: {코드: 펀드명} (DB 기존 이름, 없으면 코드)
         - holidays: KR 평일 휴장일
         - kofia: get_fund_nav_history 를 가진 클라이언트
-        - crawl: 대체 크롤러 crawl(codes, standard_date) → 레코드 (None 이면 대체 없음)
-    Input: KOFIA, (대체) fundguide.net
-    Output: (fund_price_daily 레코드, {코드: 출처 "KOFIA <기준가 날짜>" | "fundguide" | "missing: 사유"})
+    Input: KOFIA
+    Output: (fund_price_daily 레코드, {코드: 출처 "KOFIA <기준가 날짜>" | "missing: 사유"}) — 값 없는 코드는 레코드에 없음
     """
     std = dt.date.fromisoformat(standard_date)
     start = (std - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
-    records, source, missing = [], {}, []
+    records, source = [], {}
     fetched = fetch_all(lambda c: kofia.get_fund_nav_history(c, start, std.strftime("%Y%m%d")), codes)
     for code in codes:
         try:
             if isinstance(fetched[code], Exception):
                 raise fetched[code]
             hit = nav_for_date(fetched[code], std, holidays)
-        except Exception as e:                    # noqa: BLE001 — 코드 단위 격리, 대체 경로로 넘김
+        except Exception as e:                    # noqa: BLE001 — 코드 단위 격리, 누락은 check_fund_coverage 가 알림
             log.warning("[KOFIA] %s 조회 실패: %s", code, type(e).__name__)
             hit = None
         if hit is None:
-            missing.append(code)
             source[code] = "missing: KOFIA 값 없음·지연"
             continue
         price, nav_date = hit
         records.append({"standard_date": standard_date, "product_code": code,
                         "product_name": names.get(code) or code, "standard_price": price})
         source[code] = f"KOFIA {nav_date}"
-    if missing and crawl is not None:
-        log.warning("[fallback] KOFIA 누락 %s → fundguide 크롤링", missing)
-        for r in crawl(missing, standard_date):
-            records.append(r)
-            source[r["product_code"]] = "fundguide"
     return records, source
-
-
-def compare_sources(kofia_records: list[dict], crawled: list[dict]) -> list[str]:
-    """
-    Purpose: KOFIA 값과 크롤러 값 대조 (전환 검증 기간)
-    Parameter:
-        - kofia_records: 적재한 레코드 (KOFIA 출처만)
-        - crawled: 같은 기준일 크롤러 레코드
-    Input: 없음
-    Output: 불일치 설명 리스트 (크롤러 실패 코드는 비교 생략)
-    """
-    got = {r["product_code"]: r["standard_price"] for r in crawled}
-    return [f"{r['product_code']} KOFIA {r['standard_price']} ≠ fundguide {got[r['product_code']]}"
-            for r in kofia_records
-            if r["product_code"] in got and abs(r["standard_price"] - got[r["product_code"]]) > PRICE_TOLERANCE]
 
 
 def missing_dates(loaded: set[dt.date], start: dt.date, end: dt.date) -> list[dt.date]:
@@ -193,6 +171,23 @@ def gap_records(rows: list[dict], gaps: list[dt.date], code: str, name: str,
     return records, unfilled
 
 
+def date_runs(dates: list[str]) -> list[tuple[str, str, int]]:
+    """
+    Purpose: 날짜들을 연속 달력일 구간으로 묶음
+    Parameter:
+        - dates: YYYY-MM-DD 리스트 (순서·중복 무관)
+    Input: 없음
+    Output: [(시작, 끝, 일수)] 시작일 오름차순
+    """
+    runs: list[list] = []
+    for d in sorted({dt.date.fromisoformat(x) for x in dates}):
+        if runs and d - runs[-1][1] == dt.timedelta(days=1):
+            runs[-1][1] = d
+        else:
+            runs.append([d, d])
+    return [(a.isoformat(), b.isoformat(), (b - a).days + 1) for a, b in runs]
+
+
 def gap_embed(filled: dict[str, list[str]], unfilled: dict[str, list[str]]) -> dict | None:
     """
     Purpose: 빈 날짜 보충 알림 embed (보충이 있을 때만 — 못 채운 날만 있으면 로그만, 매일 같은 경고 반복 방지)
@@ -200,7 +195,7 @@ def gap_embed(filled: dict[str, list[str]], unfilled: dict[str, list[str]]) -> d
         - filled: {코드: 보충한 날짜 YYYY-MM-DD 오름차순}
         - unfilled: {코드: KOFIA 에 값이 없어 못 채운 날짜}
     Input: 없음
-    Output: Discord embed 또는 None (보충 0건)
+    Output: Discord embed 또는 None (보충 0건). 재계산 안내 = 전 코드 보충일의 연속 구간 (최근 MAX_ALERT_RUNS 개 + 외 n구간)
     """
     if not filled:
         return None
@@ -208,9 +203,12 @@ def gap_embed(filled: dict[str, list[str]], unfilled: dict[str, list[str]]) -> d
               for code, d in filled.items()]
     fields += [{"name": f"⚠ {code} 못 채움", "value": ", ".join(d[:10]) + (" …" if len(d) > 10 else ""),
                 "inline": False} for code, d in unfilled.items()]
-    lo, hi = min(d[0] for d in filled.values()), max(d[-1] for d in filled.values())
-    fields.append({"name": "수기 계좌(IRP·DC) 재계산",
-                   "value": f"account_rebuild_ledger_assets start_date={lo} end_date={hi}", "inline": False})
+    runs = date_runs([x for d in filled.values() for x in d])
+    lines = [f"start_date={a} end_date={b} ({n}일)" for a, b, n in runs[-MAX_ALERT_RUNS:]]
+    if rest := runs[:-MAX_ALERT_RUNS]:
+        lines.append(f"외 {len(rest)}구간 ({rest[0][0]} ~ {rest[-1][1]})")
+    fields.append({"name": "수기 계좌(IRP·DC) 재계산 — account_rebuild_ledger_assets",
+                   "value": "\n".join(lines), "inline": False})
     return {"title": "🩹 펀드 기준가 빈 날짜 보충", "color": 0x1E88E5,
             "description": "market.fund_price_daily — KOFIA 이력으로 빈 날짜만 INSERT (기존 행 불변)",
             "fields": fields}

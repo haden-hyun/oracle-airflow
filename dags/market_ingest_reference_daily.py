@@ -14,7 +14,7 @@ from airflow.sdk import Param, dag, get_current_context, task, task_group
 
 from alerts import discord_failure_callback, discord_recovery_callback
 from asset_flow.assets import (EXCHANGE_RATE, FUND_PRICE, MARKET_INDEX, MV_COST_BASIS_KRW, MV_POSITION_DAILY,
-                               SOURCE_FUNDGUIDE, SOURCE_KIS, SOURCE_KOFIA, TRADING_HOLIDAY, mark)
+                               SOURCE_KIS, SOURCE_KOFIA, TRADING_HOLIDAY, mark)
 from asset_flow.runtime import KST, kst_run_end, standard_dates
 
 GROUPS = ["exchange_rate", "fund_price", "market_index"]
@@ -27,7 +27,7 @@ DAG_DOC = """
 | 그룹 | 적재 | 내용 |
 |---|---|---|
 | `exchange_rate` | `market.exchange_rate_daily` | USD·JPY·GBP·EUR 원화 환율 T-1 (달력일, 주말 = 직전 고시). 수동 `start_date` 면 이력 백필(빈 날만) |
-| `fund_price` | `market.fund_price_daily` | 연금저축·IRP·DC 펀드 T-1 기준가 (KOFIA, 없거나 지연된 코드만 fundguide) + 최근 1년 빈 날짜 보충 |
+| `fund_price` | `market.fund_price_daily` | 연금저축·IRP·DC 펀드 T-1 기준가 (KOFIA) + 최근 1년 빈 날짜 보충 |
 | `market_index` | `market.index_daily` | 코스피·코스닥·S&P 500·나스닥 종합 일봉 (거래일만, 최근 5거래일 재수집, 신규면 from_date 부터) |
 
 | Task | 내용 |
@@ -36,8 +36,8 @@ DAG_DOC = """
 | `exchange_rate.get_standard_date` | 기준일 T-1 (늦은 정기 run · 백필 run 이면 skip) |
 | `exchange_rate.fetch/transform/upload_exchange_rates` | KIS 현재값 → 교차 환산 → 기준일 DELETE 후 INSERT |
 | `exchange_rate.backfill_exchange_rates` | `start_date`~`end_date` 이력 → 달력일 이월 → 빈 날만 INSERT (기존 행 불변) |
-| `fund_price.*` | 기준일 · 대상 코드 → 수집 → 적재 → 누락 점검 · 크롤러 대조 |
-| `fund_price.fill_nav_gaps` | 최근 365일 빈 달력일 → KOFIA 이력(주말·휴일 이월) → 빈 날만 INSERT · 보충 있으면 Discord (all_done — T-1 실패·늦은 run 에도 실행, 빈 날 없으면 호출 0) |
+| `fund_price.*` | 기준일 · 대상 코드 → KOFIA 수집 → 적재 → 누락 점검 (값 없는 코드 = 실패 알림) |
+| `fund_price.fill_nav_gaps` | 최근 365일 빈 달력일 → KOFIA 이력(주말·휴일 이월) → 빈 날만 INSERT · 보충 있으면 Discord(재계산 구간 안내) (all_done — T-1 실패·늦은 run 에도 실행, 빈 날 없으면 호출 0) |
 | `market_index.plan_index_windows` | 지수별 창 (KR 상한 T-1, US 상한 = 마감된 마지막 미국 날짜) |
 | `market_index.collect_index_prices` | KIS 이력 조회 → 창 끝 거래일 행 검증 (없으면 실패·재시도) |
 | `market_index.upload_index_prices` | PK upsert (값이 바뀐 행만 update_datetime 갱신) |
@@ -152,21 +152,22 @@ def market_ingest_reference_daily():
                 raise AirflowSkipException("start_date 지정 = 백필 run → 매일 경로 skip")
             return standard_dates(get_current_context())["standard_date"]
 
-        @task(task_id="fetch_exchange_rates", inlets=[SOURCE_KIS], retries=3, retry_delay=timedelta(seconds=20),
-              retry_exponential_backoff=2.0)
+        @task(task_id="fetch_exchange_rates", inlets=[SOURCE_KIS], retries=5, retry_delay=timedelta(seconds=30),
+              retry_exponential_backoff=2.0, max_retry_delay=timedelta(minutes=2))
         def fetch_exchange_rates(standard_date: str) -> list:
             """
             Purpose: KIS 환율 원시 응답 조회
             Parameter:
                 - standard_date: 기준일
             Input: secrets 파일, 토큰 저장소, KIS API
-            Output: 통화별 원시 JSON 리스트
+            Output: 통화별 원시 JSON 리스트. 오류 응답(rt_cd·output1 없음)이면 실패 → 재시도 = 재조회
+                    (최소 30·60·120·120·120초, 지터 포함 최대 약 9분 → 07:00 wait_for_exchange_rate 600초 안)
             """
             from asset_flow.config.kis import KIS
 
             return kis_client().get_exchange_rate(standard_date, KIS.EXCHANGE_RATE_PRODUCT_CODES)
 
-        @task(task_id="transform_exchange_rates")
+        @task(task_id="transform_exchange_rates", retries=0)      # 입력이 XCom 고정 → 재시도 무의미
         def transform_exchange_rates(standard_date: str, raw_list: list) -> list:
             """
             Purpose: 원시 응답 → 원화 기준 레코드
@@ -236,7 +237,7 @@ def market_ingest_reference_daily():
     @task_group(group_id="fund_price")
     def fund_price() -> None:
         """
-        Purpose: 펀드 기준가 그룹 (KOFIA 주 경로, 빠진 코드만 fundguide)
+        Purpose: 펀드 기준가 그룹 (KOFIA 단일 소스)
         Parameter: 없음
         Input: 없음
         Output: 없음
@@ -268,29 +269,25 @@ def market_ingest_reference_daily():
             extra = get_current_context()["params"]["extra_fund_codes"]
             return fund_codes_to_crawl(load_secrets(), load_app_config(), extra)
 
-        @task(task_id="collect_fund_prices", inlets=[SOURCE_KOFIA, SOURCE_FUNDGUIDE, TRADING_HOLIDAY])
+        @task(task_id="collect_fund_prices", inlets=[SOURCE_KOFIA, TRADING_HOLIDAY])
         def collect_fund_prices(standard_date: str, codes: list[str]) -> dict:
             """
-            Purpose: 기준가 수집 (KOFIA → 빠진 코드만 fundguide 크롤링)
+            Purpose: 기준가 수집 (KOFIA)
             Parameter:
                 - standard_date: 기준일
                 - codes: 펀드코드 리스트
-            Input: KOFIA, (대체) fundguide.net, market.fund_price_daily(이름)·trading_holiday, config funds
-            Output: {"records": fund_price_daily 레코드, "source": {코드: 출처}} — 끝내 빠진 코드는 records 에 없음
+            Input: KOFIA, market.fund_price_daily(이름)·trading_holiday
+            Output: {"records": fund_price_daily 레코드, "source": {코드: 출처}} — 값 없는 코드는 records 에 없음
             """
             from datetime import date
 
             from asset_flow import db_manager as db
-            from asset_flow.app_config import load_app_config
             from asset_flow.clients.kofia_client import KofiaClient
-            from asset_flow.crawler.fund_crawler import crawl_fund_prices as crawl
             from asset_flow.pipeline.fund_nav import LOOKBACK_DAYS, collect_fund_prices as collect
 
             engine, std = db.asset_engine(), date.fromisoformat(standard_date)
             hol = db.get_holiday_sets(engine, (std - timedelta(days=LOOKBACK_DAYS)).isoformat(), standard_date)["KR"]
-            fallback = crawl if load_app_config().funds.crawler_fallback else None
-            records, source = collect(codes, standard_date, db.get_fund_names(engine, codes), hol, KofiaClient(),
-                                      fallback)
+            records, source = collect(codes, standard_date, db.get_fund_names(engine, codes), hol, KofiaClient())
             print(f"[{standard_date}] 수집 {len(records)}/{len(codes)}: {source}")
             return {"records": records, "source": source}
 
@@ -316,7 +313,7 @@ def market_ingest_reference_daily():
         @task(task_id="check_fund_coverage", retries=0)
         def check_fund_coverage(standard_date: str, codes: list[str]) -> None:
             """
-            Purpose: 기준일 기준가 누락 검사 (크롤링 실패를 상류에서 바로 알림)
+            Purpose: 기준일 기준가 누락 검사 (KOFIA 값 없음·지연을 상류에서 바로 알림)
             Parameter:
                 - standard_date: 기준일
                 - codes: 수집 대상 펀드코드
@@ -329,30 +326,6 @@ def market_ingest_reference_daily():
                 raise RuntimeError(f"[{standard_date}] 기준가 미수집 {len(missing)}개: {missing} — "
                                    f"KOFIA 공시 확인 후 수동 재실행")
             print(f"[{standard_date}] 기준가 {len(codes)}개 모두 적재됨")
-
-        @task(task_id="compare_with_fundguide", inlets=[SOURCE_FUNDGUIDE], retries=0, max_active_tis_per_dag=1)
-        def compare_with_fundguide(standard_date: str, collected: dict) -> None:
-            """
-            Purpose: 전환 검증 — KOFIA 적재값과 fundguide 크롤링 값 대조
-            Parameter:
-                - standard_date: 기준일
-                - collected: collect_fund_prices 결과
-            Input: config funds.shadow_compare, fundguide.net
-            Output: 없음. 스위치 off 면 skip, 값이 다르면 RuntimeError → 알림 (크롤링 실패 코드는 비교 생략)
-            """
-            from airflow.sdk.exceptions import AirflowSkipException
-
-            from asset_flow.app_config import load_app_config
-            from asset_flow.crawler.fund_crawler import crawl_fund_prices as crawl
-            from asset_flow.pipeline.fund_nav import compare_sources
-
-            if not load_app_config().funds.shadow_compare:
-                raise AirflowSkipException("funds.shadow_compare=false")
-            kofia = [r for r in collected["records"] if collected["source"][r["product_code"]].startswith("KOFIA")]
-            crawled = crawl([r["product_code"] for r in kofia], standard_date)
-            if diff := compare_sources(kofia, crawled):
-                raise RuntimeError(f"[{standard_date}] KOFIA ≠ fundguide {len(diff)}건: {diff}")
-            print(f"[{standard_date}] 대조 {len(crawled)}/{len(kofia)}개 일치 (크롤링 실패 {len(kofia) - len(crawled)})")
 
         @task(task_id="fill_nav_gaps", inlets=[SOURCE_KOFIA, TRADING_HOLIDAY], outlets=[FUND_PRICE],
               trigger_rule="all_done", retries=2)
@@ -415,7 +388,7 @@ def market_ingest_reference_daily():
         codes = resolve_fund_codes()
         collected = collect_fund_prices(std_date, codes)
         upload = upload_fund_prices(std_date, collected["records"])
-        upload >> [check_fund_coverage(std_date, codes), compare_with_fundguide(std_date, collected)]
+        upload >> check_fund_coverage(std_date, codes)
         upload >> fill_nav_gaps(codes)                     # all_done — T-1 실패·skip 에도 보충
 
     @task_group(group_id="market_index")

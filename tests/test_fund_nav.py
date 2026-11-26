@@ -1,7 +1,7 @@
 import datetime as dt
 
-from asset_flow.pipeline.fund_nav import (collect_fund_prices, compare_sources, expected_nav_date, fetch_all,
-                                         gap_embed, gap_records, missing_dates, nav_for_date)
+from asset_flow.pipeline.fund_nav import (collect_fund_prices, date_runs, expected_nav_date, fetch_all, gap_embed,
+                                         gap_records, missing_dates, nav_for_date)
 
 D = dt.date
 HOL = {D(2026, 10, 5), D(2026, 10, 9), D(2025, 12, 31)}          # 대체공휴일 · 한글날 · KRX 연말휴장
@@ -61,43 +61,18 @@ def test_stale_nav_is_missing():
 
 def test_collect_kofia_first():
     kofia = FakeKofia({"A": ROWS})
-    recs, src = collect_fund_prices(["A"], "2026-10-11", {"A": "펀드A"}, HOL, kofia, crawl=None)
+    recs, src = collect_fund_prices(["A"], "2026-10-11", {"A": "펀드A"}, HOL, kofia)
     assert recs == [{"standard_date": "2026-10-11", "product_code": "A", "product_name": "펀드A",
                      "standard_price": 2028.06}]
     assert src == {"A": "KOFIA 2026-10-08"} and kofia.calls == [("A", "20260921", "20261011")]
 
 
-def test_collect_falls_back_to_crawler_only_for_missing():
-    crawled = []
-
-    def crawl(codes, std):
-        """
-        Purpose: 크롤러 대역 (요청 코드 기록)
-        Parameter:
-            - codes: 코드
-            - std: 기준일
-        Input: 없음
-        Output: 레코드
-        """
-        crawled.extend(codes)
-        return [{"standard_date": std, "product_code": c, "product_name": c, "standard_price": 1.0} for c in codes]
-
+def test_collect_drops_missing_codes():
+    # 지연(B)·조회 실패(C) 코드는 레코드에서 빠짐 → check_fund_coverage 가 실패 알림
     kofia = FakeKofia({"A": ROWS, "B": ROWS[:-1]}, fail={"C"})
-    recs, src = collect_fund_prices(["A", "B", "C"], "2026-10-13", {}, HOL, kofia, crawl=crawl)
-    assert crawled == ["B", "C"] and len(recs) == 3
-    assert src == {"A": "KOFIA 2026-10-13", "B": "fundguide", "C": "fundguide"}
-    assert recs[0]["product_name"] == "A"                                         # 이름 없으면 코드
-
-
-def test_collect_without_fallback_leaves_gap():
-    recs, src = collect_fund_prices(["B"], "2026-10-13", {}, HOL, FakeKofia({"B": ROWS[:-1]}), crawl=None)
-    assert recs == [] and src["B"].startswith("missing")
-
-
-def test_compare_sources():
-    k = [{"product_code": "A", "standard_price": 2031.0}, {"product_code": "B", "standard_price": 10.0}]
-    assert compare_sources(k, [{"product_code": "A", "standard_price": 2031.004}]) == []      # B 크롤링 실패 → 생략
-    assert compare_sources(k, [{"product_code": "B", "standard_price": 10.5}]) == ["B KOFIA 10.0 ≠ fundguide 10.5"]
+    recs, src = collect_fund_prices(["A", "B", "C"], "2026-10-13", {}, HOL, kofia)
+    assert [r["product_code"] for r in recs] == ["A"] and recs[0]["product_name"] == "A"     # 이름 없으면 코드
+    assert src["A"] == "KOFIA 2026-10-13" and src["B"].startswith("missing") and src["C"].startswith("missing")
 
 
 def test_fund_dag_structure():
@@ -105,10 +80,8 @@ def test_fund_dag_structure():
 
     t = _load_dag("market_ingest_reference_daily").task_dict
     g = "fund_price."
-    assert g + "crawl_fund_prices" not in t
+    assert g + "crawl_fund_prices" not in t and g + "compare_with_fundguide" not in t
     assert t[g + "upload_fund_prices"].upstream_task_ids == {g + "get_standard_date", g + "collect_fund_prices"}
-    assert t[g + "compare_with_fundguide"].upstream_task_ids == {g + "get_standard_date", g + "collect_fund_prices",
-                                                                 g + "upload_fund_prices"}
     assert t[g + "check_fund_coverage"].upstream_task_ids >= {g + "upload_fund_prices"}
 
 
@@ -251,7 +224,24 @@ def test_gap_embed_only_when_filled():
     e = gap_embed({"A": ["2026-11-22", "2026-11-23"], "B": ["2026-11-23"]}, {"B": ["2026-11-20"]})
     values = [f["value"] for f in e["fields"]]
     assert "2026-11-22 ~ 2026-11-23 · 2일 보충" in values and "2026-11-20" in values
-    assert values[-1] == "account_rebuild_ledger_assets start_date=2026-11-22 end_date=2026-11-23"
+    assert values[-1] == "start_date=2026-11-22 end_date=2026-11-23 (2일)"
+
+
+def test_date_runs_groups_consecutive_days():
+    assert date_runs([]) == []
+    assert date_runs(["2026-11-23", "2026-03-01", "2026-11-22", "2026-11-22", "2026-02-28"]) == \
+           [("2026-02-28", "2026-03-01", 2), ("2026-11-22", "2026-11-23", 2)]
+
+
+def test_gap_embed_lists_recent_runs_and_rest():
+    # 흩어진 빈 날 7구간 → 최근 5구간 + "외 2구간" (1년 전체 범위 안내 방지)
+    days = ["2026-01-05", "2026-02-10", "2026-03-15", "2026-03-16", "2026-05-01", "2026-07-07", "2026-09-09",
+            "2026-11-22"]
+    e = gap_embed({"A": days[:4], "B": days[3:]}, {})
+    lines = e["fields"][-1]["value"].split("\n")
+    assert lines[0] == "start_date=2026-03-15 end_date=2026-03-16 (2일)"
+    assert lines[4] == "start_date=2026-11-22 end_date=2026-11-22 (1일)"
+    assert lines[5] == "외 2구간 (2026-01-05 ~ 2026-02-10)" and len(lines) == 6
 
 
 def test_fill_nav_gaps_runs_after_upload_even_on_failure():

@@ -24,6 +24,8 @@
 
 - 11-19 07:00 run: KIS 환율 응답에 `output1` 없음 → KeyError → KIS·Upbit 계좌 11-18 asset_daily 없음 (수기 계좌만 적재)
 - KIS 는 과거 잔고 API 없음 → 복구 불가
+- 원인: EUR(FX@EUR) 만 `rt_cd=1 OPSQ0008 호출 후처리(MCI전송) 오류` (같은 아침 배당·지수에도 간헐 발생) → `get_exchange_rate` 가 rt_cd 미검사로 fetch 성공 처리 → transform KeyError. transform 재시도는 같은 XCom 재변환이라 무의미
+- 조치: `get_exchange_rate` 가 rt_cd≠0 → `KisApiError`(msg_cd·msg1), output1 없음 → `RuntimeError` → fetch 재시도(5회, 최소 30·60·120·120·120초 — 11-19 오류가 약 6분 지속돼 07:05 전후까지 버티도록)가 재조회. transform `retries=0`
 
 ## 2026-11-23~24 — plugins/ 재시작 누락 재발 → 배포 절차 (`f072bd7` → `9446eef`)
 
@@ -64,3 +66,13 @@
   - `scripts/oneoff/2026-11-26_cma_remove.sql`: asset_daily CMA 177행 삭제, 백업 `account.asset_daily_cma_bak_20261126` (2026-12-10 이후 DROP)
   - 대시보드 저장소의 `LIQUIDITY` 범위 CMA 매핑은 그대로 (빈 범위)
 - 청년미래적금 (수기 원장 DAG): 11-20 입금 50만 원 취소(누계 230만 → 180만, `allow_decrease`) · 11-23 20만 원 입금(누계 200만), 11-20~25 재계산
+
+## 2026-11-26 — fundguide 대체·대조 제거 (KOFIA 단일 소스)
+
+- 근거
+  - 10-16~11-25 `compare_with_fundguide` 39회 성공(skip 7·상류 실패 1)·불일치 0 (README 의 1~2주 검증 조건 충족)
+  - fundguide robots.txt `Disallow: /`
+  - KOFIA 결측은 다음 날 06:55 `fill_nav_gaps` 가 자동 보충 (11-24 도입), T-1 누락은 `check_fund_coverage` 실패 알림
+- 삭제: `compare_with_fundguide` 태스크 · `collect_fund_prices` 크롤러 대체 경로 · `plugins/asset_flow/crawler/` · `compare_sources` · `SOURCE_FUNDGUIDE` · config `funds.crawler_fallback`·`shadow_compare` · Playwright(requirements·Dockerfile Chromium 단계)
+- 보충 알림 재계산 안내: min~max 한 범위 → 연속 구간별 (최근 5구간 + 외 n구간) — 흩어진 빈 날에 1년 전체 재계산을 안내하지 않게
+- 배포: plugins·config 같은 커밋 → 재시작, 이미지 재빌드 (Playwright 제거)

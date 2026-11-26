@@ -149,11 +149,12 @@ airflow/
 | 그룹 | 적재 | 내용 |
 |---|---|---|
 | `exchange_rate` | `market.exchange_rate_daily` | USD·JPY·GBP·EUR T-1, 달력일(주말·휴일 = 직전 고시). GBP·EUR 은 달러 기준 → 원/달러로 교차 환산 |
-| `fund_price` | `market.fund_price_daily` | KOFIA 기준가(T-1 이하 최신 = 휴일 이월), 없거나 지연된 코드만 fundguide, 누락 시 실패·알림, 전환 검증 기간 크롤러 대조 |
+| `fund_price` | `market.fund_price_daily` | KOFIA 기준가(T-1 이하 최신 = 휴일 이월), 값 없거나 지연된 코드는 실패·알림 (다음 날 `fill_nav_gaps` 가 보충) |
 | `market_index` | `market.index_daily` | 코스피·코스닥(FHKUP03500100) · S&P 500·나스닥 종합(FHKST03030100 `N`) 일봉, 거래일만, 최근 5거래일 재수집, 신규면 `reference_ingest.market_index.from_date` 부터 |
 
 - 그룹 사이 의존 없음 — 한 그룹 실패가 다른 그룹을 막지 않음 (run 은 실패 표시). 공통 선행은 `wait_for_token` (환율·지수만)
 - 늦은 정기 run skip: 환율·펀드만 (현재값 API). 지수는 이력 API 라 skip 없음
+- 환율 오류 응답(rt_cd≠0 · output1 없음)은 fetch 에서 실패(msg_cd·msg1) → 재시도 = 재조회 (5회, 최소 30·60·120·120·120초, 최대 약 9분 — 07:00 센서 600초 안)
 - 지수 US 상한 = 뉴욕 16:30 이 지난 마지막 날짜 (장중 수동 run 이 확정 전 값을 넣지 않게). 창 끝 거래일 행이 없으면 실패·재시도
 - KIS 기간 조회(FHKST03030100)는 1회 100행이면서 **요청 구간의 한국 영업일 수**만큼만 준다 → `get_chart_history` 가 끝 날짜를 당겨 반복 (국내 업종은 50행)
 - 수동 Param: `groups`(실행할 그룹) · `start_date`/`end_date` · `extra_fund_codes`
@@ -190,17 +191,15 @@ airflow/
 | | 06:55 `fund_price` T-1 경로 | 06:55 `fund_price.fill_nav_gaps` | 07:10 시세 DAG `ingest_fund_nav` |
 |---|---|---|---|
 | 역할 | **자산 평가 입력 (T-1)** | 최근 365일 빈 날짜 보충 (며칠 실패 후 자동 복구) | (구 보충 경로 — 꺼짐, 관찰 후 삭제) |
-| 주 경로 | KOFIA 전자공시 XML (인증 없음, 기간 조회) | KOFIA (빈 날 있는 펀드만 펀드당 1회) | KOFIA |
-| 대체 | fundguide 크롤링 — KOFIA 값 없음·지연 코드만 (`funds.crawler_fallback`) | 없음 | 없음 |
+| 소스 | KOFIA 전자공시 XML (인증 없음, 기간 조회) | KOFIA (빈 날 있는 펀드만 펀드당 1회) | KOFIA |
 | 쓰기 | 기준일·코드 DELETE 후 INSERT | `INSERT … ON CONFLICT DO NOTHING` (기존 행 불변) | 같음 (영업일만 — 주말 이월 행 없음) |
 | 실행 조건 | 늦은 정기 run 이면 skip | `all_done` — T-1 실패·skip·늦은 run 에도 실행 | `price_ingest.fund_nav_enabled` (**false**) |
-| 알림 | 실패 시 | **보충이 있을 때만** Discord 1건 (+ 수기 계좌 재계산 명령) | 실패 시 |
+| 알림 | 실패 시 | **보충이 있을 때만** Discord 1건 (+ 수기 계좌 재계산 구간: 연속 구간 최근 5개 + 외 n구간) | 실패 시 |
 
-- 기준일 값 = 기준일 이하 최신 KOFIA 기준가 (주말·휴일 이월). 마지막 영업일 값이 없으면 지연으로 보고 대체 경로
+- 기준일 값 = 기준일 이하 최신 KOFIA 기준가 (주말·휴일 이월). 마지막 영업일 값이 없으면 지연 → 레코드 없음 → `check_fund_coverage` 실패 알림
 - 보충도 같은 규칙(`nav_for_date`) → 매일 적재분과 사후 보충분이 같은 모양 (주말·휴일 포함 모든 달력일에 행)
-- 보충 알림을 받으면 IRP·DC `asset_daily` 는 `account_rebuild_ledger_assets` 로 그 범위 재계산 (KIS·업비트 계좌는 과거 잔고 API 없음 → 복구 불가)
+- 보충 알림을 받으면 IRP·DC `asset_daily` 는 `account_rebuild_ledger_assets` 로 안내된 구간별 재계산 (KIS·업비트 계좌는 과거 잔고 API 없음 → 복구 불가)
 - 못 채운 날(KOFIA 에도 값 없음)은 로그만 — T-1 누락은 `check_fund_coverage` 가 실패 알림
-- 검증 끝나면(1~2주 불일치 0) `crawler_fallback`·`shadow_compare` 끄고 크롤러·Playwright 제거
 - 보충 이관 관찰(1~2주) 후 시세 DAG 의 FUND_NAV 경로(`ingest_fund_nav`·`price_plan` FUND_NAV 분기·`fund_nav_enabled`) 삭제
 
 ### 배당 DAG `account_ingest_dividend` (07:20)
@@ -234,7 +233,7 @@ airflow/
   - 시세 DAG · 기준 데이터 환율·펀드는 갱신 안 함, 배당 DAG · 지수 그룹은 config 스위치
 - Airflow Asset = 계보·이력 표시 전용 (스케줄 미사용, 대시보드 '데이터 › 흐름' 탭이 REST 로 읽음)
   - `outlets`: 적재 테이블 · `refresh_dashboard_views`(finalize) → MV `dashboard.mv_position_daily`·`mv_cost_basis_krw`
-  - `inlets`: 외부 API·수기 입력 → `source.kis`·`upbit`·`kofia`·`fundguide`·`kasi`·`manual` (이름만), 다른 DAG 가 쓴 테이블을 읽으면 그 테이블 (같은 DAG 가 쓰는 테이블은 제외 — 자기 순환 방지. DAG 사이 고리는 남음: 자산 DAG → `asset_daily` → 시세 DAG → `fund_price_daily` → 자산 DAG)
+  - `inlets`: 외부 API·수기 입력 → `source.kis`·`upbit`·`kofia`·`kasi`·`manual` (이름만), 다른 DAG 가 쓴 테이블을 읽으면 그 테이블 (같은 DAG 가 쓰는 테이블은 제외 — 자기 순환 방지. DAG 사이 고리는 남음: 자산 DAG → `asset_daily` → 시세 DAG → `fund_price_daily` → 자산 DAG)
   - `group`: `market`·`account`·`dividend`(배당 2개)·`dashboard`·`source`
   - 이벤트 메모 공통 키: `data_date`(YYYY-MM-DD, 구간이면 끝)·`rows`(쓴 행 수, 변경 없음 0 — 휴장일 DAG 는 변경 없어도 `rows=0` 이벤트)·`env`, 구간은 `data_from`·`data_to`, 계좌 단위는 `account_id` (계좌번호 금지). 옛 키(`standard_date`·`base_date`·`end`·`rebuild`·`days`)는 당분간 함께
 - 알림: 태스크 최종 실패 시 Discord, 직전 run 실패였으면 복구 알림
@@ -325,7 +324,7 @@ airflow/
 | config 키 | 내용 |
 |---|---|
 | `tables` | 적재 테이블명 |
-| `funds` | 연금 기본 펀드 · 수집 대상(`crawl_codes`) · `crawler_fallback` · `shadow_compare` |
+| `funds` | 연금 기본 펀드 · 수집 대상(`crawl_codes`) |
 | `manual_asset_types` | 수기 유형 product_code·multiplier |
 | `credential_check` | 키 만료 알림 규칙 |
 | `dashboard.refresh_procedure` | MV 갱신 프로시저명 |
@@ -349,14 +348,14 @@ airflow/
 | `pipeline/price_plan.py` | 시세 수집 창 계산·소스별 수집·지연 점검 |
 | `pipeline/dividend.py` | 배당 조회 창·일정·원장·미국 추정 |
 | `pipeline/ledger_rebuild.py` | 수기 계좌 재계산 |
-| `pipeline/fund_nav.py` | 펀드 기준가 수집 (KOFIA → 크롤러 대체, 대조) |
+| `pipeline/fund_nav.py` | 펀드 기준가 수집 (KOFIA) · 빈 날짜 보충 · 보충 알림 |
 | `ops/key_expiry.py` | 키 만료·설정 정합성 점검 |
 | `holiday.py` | 휴장일 계산·변경 비교 |
 | `db_manager.py` | 자산 DB 읽기·쓰기 (쓰기 가드) |
 | `runtime.py` | 기준일 계산, 지연 run skip |
 | `clients/` | KIS(`_request`·`_get_pages`)·Upbit·KOFIA |
 | `transformers/` | KIS·Upbit·원장·시세·배당 변환 |
-| `crawler/` · `config/` | fundguide 크롤러(대체 경로), API 상수·스키마 |
+| `config/` | API 상수·스키마 |
 
 ## 테스트
 

@@ -4,7 +4,7 @@
 - 토큰은 호출부가 주입 (token_for 또는 existing_token)
 - config 는 secrets_config.kis_client_config 로 만든 dict
 - 제공: get_overseas_balance / get_domestic_balance / get_account_balance / get_overseas_present_balance /
-        get_exchange_rate (원시 JSON 반환, 잔고는 rt_cd 검사)
+        get_exchange_rate (원시 JSON 반환, 잔고·환율은 rt_cd 검사)
 - 공통: _request(단건, rt_cd 검사·간격 유지) / _get_pages(tr_cont 연속조회) — 배당·시세 전용 (잔고·환율은 safe_request 직접)
 - 배당: get_ksd_dividend / get_period_rights / get_overseas_period_rights / get_overseas_rights_ice (원시 행)
 - 시세: get_domestic_daily_price / get_overseas_daily_price (원주가, 100행씩 날짜를 당겨 반복)
@@ -26,7 +26,7 @@ _ACCOUNT_FIELD = re.compile(r'("(?:ctx_area_[a-z0-9]+|acno\d*|cano)"\s*:\s*")[^"
 
 
 class KisApiError(RuntimeError):
-    """KIS 응답 rt_cd != "0" (HTTP 200 오류). 메시지에 tr_id·msg_cd·msg1 만 — 파라미터·ctx 값 없음."""
+    """KIS 응답 rt_cd != "0" (HTTP 200 오류). 메시지에 tr_id·msg_cd·msg1 만 — 파라미터·ctx 값 없음 (환율은 tr_id 에 통화 코드 포함)."""
 
     def __init__(self, tr_id: str, msg_cd: str | None, msg1: str | None):
         """
@@ -229,16 +229,23 @@ class KISApiClient(BaseApiClient):
             - standard_date: 기준일 (YYYY-MM-DD)
             - product_codes: 통화 상품코드 리스트
         Input: KIS API
-        Output: 통화별 원시 JSON 리스트
+        Output: 통화별 원시 JSON 리스트. rt_cd 오류면 KisApiError, output1 비면 RuntimeError
+                (fetch 태스크 실패 → 재시도가 재조회)
         """
         url = self._build_url(KIS.PATHS["exchange_rate"])
-        headers = self._build_headers(KIS.TR_IDS["exchange_rate"])
+        tr_id = KIS.TR_IDS["exchange_rate"]
+        headers = self._build_headers(tr_id)
         day = standard_date.replace("-", "")
         results = []
         for code in product_codes:
             params = {"FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": day, "FID_INPUT_DATE_2": day,
                       **KIS.PARAMS["exchange_rate"]}
-            results.append(self.safe_request("GET", url, headers=headers, params=params).json())
+            body = self.safe_request("GET", url, headers=headers, params=params).json()
+            if body.get("rt_cd") != "0":
+                raise KisApiError(f"{tr_id} {code}", body.get("msg_cd"), body.get("msg1"))
+            if not body.get("output1"):
+                raise RuntimeError(f"KIS {tr_id} {code} output1 없음 (msg_cd={body.get('msg_cd')})")
+            results.append(body)
         return results
 
     # ── 배당 ──

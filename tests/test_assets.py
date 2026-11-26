@@ -77,7 +77,7 @@ def test_groups_sources_and_mvs():
     assert a.DIVIDEND_EVENT.group == a.DIVIDEND_RECEIPT.group == "dividend"
     assert (a.DIVIDEND_EVENT.name, a.DIVIDEND_RECEIPT.name) == ("market.dividend_event", "account.dividend_receipt")
     sources = {v.name: v for v in vars(a).values() if isinstance(v, Asset) and v.group == "source"}
-    assert set(sources) == {f"source.{s}" for s in ("kis", "upbit", "kofia", "fundguide", "kasi", "manual")}
+    assert set(sources) == {f"source.{s}" for s in ("kis", "upbit", "kofia", "kasi", "manual")}
     for name, s in sources.items():                     # 이름만 — URL·키·계좌 정보 금지
         assert s.uri == f"asset://source/{name.split('.')[1]}"
     assert {a.MV_POSITION_DAILY.name, a.MV_COST_BASIS_KRW.name} == {"dashboard.mv_position_daily",
@@ -91,8 +91,7 @@ def test_groups_sources_and_mvs():
     ("market_ingest_reference_daily", "exchange_rate.fetch_exchange_rates", {"source.kis"}),
     ("market_ingest_reference_daily", "exchange_rate.backfill_exchange_rates", {"source.kis"}),
     ("market_ingest_reference_daily", "fund_price.collect_fund_prices",
-     {"source.kofia", "source.fundguide", "market.trading_holiday"}),
-    ("market_ingest_reference_daily", "fund_price.compare_with_fundguide", {"source.fundguide"}),
+     {"source.kofia", "market.trading_holiday"}),
     ("market_ingest_reference_daily", "fund_price.fill_nav_gaps", {"source.kofia", "market.trading_holiday"}),
     ("market_ingest_reference_daily", "market_index.collect_index_prices", {"source.kis", "market.trading_holiday"}),
     ("account_ingest_asset_daily", "wait_for_exchange_rate", {"market.exchange_rate_daily"}),
