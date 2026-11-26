@@ -56,3 +56,11 @@
 - 선행: 시세 KR·US 11-21~23 수동 run, 지수 `market_index` 그룹 수동 run (11-23 까지)
 - KIS 11-22·23 행은 다음 정상일이 없어 `asset_fix.kis_live_verified` 로 적용 → `dashboard.refresh_views()`
 - 백업 2개는 2026-12-09 이후 DROP
+
+## 2026-11-26 — CMA 제외 · 청년미래적금 정정
+
+- CMA: 입출금 경유 계좌(RP 아님)라 투자 자산에서 제외
+  - secrets `KIS_CMA` `enabled: false` (다음 정기 run 부터 미수집, 키는 ISA 와 공유라 그대로)
+  - `scripts/oneoff/2026-11-26_cma_remove.sql`: asset_daily CMA 177행 삭제, 백업 `account.asset_daily_cma_bak_20261126` (2026-12-10 이후 DROP)
+  - 대시보드 저장소의 `LIQUIDITY` 범위 CMA 매핑은 그대로 (빈 범위)
+- 청년미래적금 (수기 원장 DAG): 11-20 입금 50만 원 취소(누계 230만 → 180만, `allow_decrease`) · 11-23 20만 원 입금(누계 200만), 11-20~25 재계산

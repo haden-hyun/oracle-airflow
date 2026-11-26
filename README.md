@@ -112,7 +112,7 @@ airflow/
 
 # asset-flow
 
-- 대상: 해외·국내주식, RP/발행어음, ISA, 연금저축, CMA, 암호화폐, IRP, DC, 적금, 주택청약
+- 대상: 해외·국내주식, RP/발행어음, ISA, 연금저축, 암호화폐, IRP, DC, 적금, 주택청약 (CMA 는 입출금 경유 계좌라 제외 — `enabled: false`)
 - 매일 T-1 기준 자산 현황 → `account.asset_daily`, 보유 상품 시세 → `market.product_price_daily`, 배당 → `market.dividend_event`·`account.dividend_receipt`
 - 시장 기준 데이터(보유와 무관): 환율 → `market.exchange_rate_daily`, 펀드 기준가 → `market.fund_price_daily`, 주요 지수 → `market.index_daily`
 
@@ -248,7 +248,7 @@ airflow/
 | `kis_stock` | 위탁: 해외·국내 주식 + RP/발행어음 1행 (`CASH`/`RP_NOTE`) + 예수금 `DEPOSIT`(D+2 정산) · `DEPOSIT_USD` |
 | `kis_domestic_stock` | ISA 국내 주식 + 예수금 `DEPOSIT` |
 | `kis_pension_fund` | 연금저축: 펀드(평가금액 ÷ NAV) + 국내 주식 + 예수금 `DEPOSIT` |
-| `kis_cma_cash` | CMA 현금 (ISA 키 공유) |
+| `kis_cma_cash` | CMA 현금 (ISA 키 공유) — 현재 비활성 |
 | `upbit` | 코인 잔고 × T-1 KST 자정 종가 ([기준](#upbit-가격-기준-잔고시세-공통)) + 원화 예수금 `DEPOSIT`(balance + locked) |
 | `manual_fund` | IRP·DC: 원장 좌수 × NAV × multiplier |
 | `manual_cash` | 적금·청약: 원장 원금 이월 |
