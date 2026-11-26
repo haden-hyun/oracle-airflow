@@ -1,9 +1,8 @@
 """
 시세 빈 구간 채우기 — 수집 창 계산(순수) + 소스별 수집·적재 루프 (market_ingest_product_price_daily 본체)
 
-- plan_window / recent_start / plan_product: 상품 1개의 [start, end] (순수 함수, plan_product 는 FUND_NAV 머리 갭 포함)
-- build_plan: 대상 상품 × Param → {source: [Window dict]} (FUND_NAV 스위치 off 면 제외)
-- fund_window_needed: FUND_NAV 자동 창에 빈 거래일이 있을 때만 수집 (06:55 가 매일 채우므로 평소엔 호출 0회)
+- plan_window / recent_start / plan_product: 상품 1개의 [start, end] (순수 함수)
+- build_plan: 대상 상품 × Param → {source: [Window dict]} (펀드 FUND_NAV 는 06:55 fund_price 담당이라 제외)
 - run_source → ingest_source: 소스 하나의 상품을 차례로 수집·적재 (상품 단위 격리)
 - stale_tracked: 추적 종목 최신성 점검 대상
 - KIS 토큰은 발급하지 않음 (TokenManager.existing_token)
@@ -20,7 +19,6 @@ log = logging.getLogger(__name__)
 KIS_SOURCES = ("KIS_KR_DAILY", "KIS_US_DAILY")
 PRICE_SOURCES = ("KIS_KR_DAILY", "KIS_US_DAILY", "UPBIT_DAY")
 HOLIDAY_MARKET = {"KR": "KR", "FUND": "KR", "US": "US"}      # CRYPTO 는 휴장 없음
-FUND_HEAD_GAP_DAYS = 14                                     # 펀드 최초 적재일이 floor 보다 이만큼 늦으면 머리 갭
 STALE_TRADING_DAYS = 3                                      # 추적 종목이 이 거래일 수 넘게 뒤처지면 지연
 
 
@@ -85,9 +83,9 @@ def plan_window(product: dict, last: date | None, base: date, holidays: dict[str
 def plan_product(product: dict, base: date, holidays: dict[str, set[date]], lookback_days: int, refetch_n: int,
                  params: dict) -> Window | None:
     """
-    Purpose: 상품 1개 창 = 자동 규칙(plan_window) + FUND_NAV 머리 갭 + 수동 Param 덮어쓰기
+    Purpose: 상품 1개 창 = 자동 규칙(plan_window) + 수동 Param 덮어쓰기
     Parameter:
-        - product: get_price_targets 행 (first_loaded·last_loaded 포함)
+        - product: get_price_targets 행 (last_loaded 포함)
         - base: 실행일 T
         - holidays: 평일 휴장일
         - lookback_days: 최대 소급 일수
@@ -97,11 +95,6 @@ def plan_product(product: dict, base: date, holidays: dict[str, set[date]], look
     Output: Window 또는 None
     """
     last = None if params.get("full_refresh") else product.get("last_loaded")
-    if product["price_source"] == "FUND_NAV" and last is not None:
-        # 펀드는 매일(이월 포함) 행이 있어 last 가 늘 T−1 → 최초 적재일로 과거 머리 갭 판정
-        floor = max(base - timedelta(days=lookback_days), product.get("price_from_date") or date.min)
-        if product.get("first_loaded") and product["first_loaded"] > floor + timedelta(days=FUND_HEAD_GAP_DAYS):
-            last = None
     w = plan_window(product, last, base, holidays, lookback_days, refetch_n)
     start, end = params.get("start_date") or None, params.get("end_date") or None
     if not (start or end):
@@ -111,26 +104,6 @@ def plan_product(product: dict, base: date, holidays: dict[str, set[date]], look
     return Window(product["product_code"], s, e, last is None) if s <= e else None
 
 
-def fund_window_needed(window: Window, loaded: set[date], holidays_kr: set[date]) -> bool:
-    """
-    Purpose: FUND_NAV 자동 창 수집 여부 (빈 날짜만 넣는 소스라 빈 거래일이 없으면 호출 생략)
-    Parameter:
-        - window: plan_product 결과
-        - loaded: 이 펀드의 창 안 적재일
-        - holidays_kr: KR 평일 휴장일
-    Input: 없음
-    Output: 신규(머리 갭 포함)이거나 창 안 평일·비휴장일 중 적재 안 된 날이 있으면 True
-    """
-    if window.is_new:
-        return True
-    d, end = date.fromisoformat(window.start), date.fromisoformat(window.end)
-    while d <= end:
-        if d.weekday() < 5 and d not in holidays_kr and d not in loaded:
-            return True
-        d += timedelta(days=1)
-    return False
-
-
 def build_plan(dates: dict, params: dict) -> dict:
     """
     Purpose: 수집 대상 × 창 계산 (plan_fetch 태스크 본체)
@@ -138,7 +111,7 @@ def build_plan(dates: dict, params: dict) -> dict:
         - dates: {"base_date": T, "end": T-1}
         - params: DAG Param {product_codes, start_date, end_date, full_refresh}
     Input: secrets·config, market.product·시세 테이블, market.trading_holiday
-    Output: {price_source: [{"product_code","start","end","is_new"}]} — FUND_NAV 는 스위치 on · 빈 거래일 있을 때만
+    Output: {price_source: [{"product_code","start","end","is_new"}]} (PRICE_SOURCES 만)
     """
     from asset_flow import db_manager as db
     from asset_flow.pipeline.dispatch import Deps
@@ -148,20 +121,11 @@ def build_plan(dates: dict, params: dict) -> dict:
     targets = db.get_price_targets(deps.engine, list(params.get("product_codes") or []) or None)
     holidays = db.get_holiday_sets(deps.engine, (base - timedelta(days=cfg.lookback_days + 40)).isoformat(),
                                    base.isoformat())
-    manual = bool(params.get("start_date") or params.get("end_date") or params.get("full_refresh"))
-    fund_codes = [p["product_code"] for p in targets if p["price_source"] == "FUND_NAV"]
-    nav_dates = db.get_fund_price_dates(deps.engine, fund_codes, (base - timedelta(days=30)).isoformat()) \
-        if fund_codes and cfg.fund_nav_enabled and not manual else {}
     plan: dict[str, list[dict]] = {}
     for p in targets:
-        if p["price_source"] == "FUND_NAV" and not cfg.fund_nav_enabled:
-            log.info("[%s] FUND_NAV 스위치 off — 제외", p["product_code"])
+        if p["price_source"] not in PRICE_SOURCES:
             continue
         w = plan_product(p, base, holidays, cfg.lookback_days, cfg.refetch_trading_days, params)
-        if w and p["price_source"] == "FUND_NAV" and not manual \
-                and not fund_window_needed(w, nav_dates.get(p["product_code"], set()), holidays.get("KR", set())):
-            log.info("[%s] FUND_NAV %s~%s 빈 거래일 없음 — 제외", p["product_code"], w.start, w.end)
-            continue
         if w:
             plan.setdefault(p["price_source"], []).append(asdict(w))
     print({src: len(ws) for src, ws in plan.items()})
@@ -170,9 +134,9 @@ def build_plan(dates: dict, params: dict) -> dict:
 
 def run_source(source: str, windows: list[dict]) -> dict:
     """
-    Purpose: 소스 1개 수집·적재 (ingest_prices / ingest_fund_nav 태스크 본체)
+    Purpose: 소스 1개 수집·적재 (ingest_prices 태스크 본체)
     Parameter:
-        - source: KIS_KR_DAILY | KIS_US_DAILY | UPBIT_DAY | FUND_NAV
+        - source: KIS_KR_DAILY | KIS_US_DAILY | UPBIT_DAY
         - windows: build_plan 결과 중 이 소스 (Window dict)
     Input: secrets·config, 토큰, 소스 API, 업무 DB
     Output: {"rows", "products", "failed"} (+ DB 쓰기). 창이 없으면 API·DB 호출 없음
@@ -190,42 +154,31 @@ def run_source(source: str, windows: list[dict]) -> dict:
 
 def ingest_source(source: str, products: list[dict], windows: list[Window], deps, interval: float) -> dict:
     """
-    Purpose: price_source 하나의 상품을 차례로 수집·적재 (상품 단위 커밋 — 실패는 그 상품만, FUND_NAV 조회는 병렬)
+    Purpose: price_source 하나의 상품을 차례로 수집·적재 (상품 단위 커밋 — 실패는 그 상품만)
     Parameter:
-        - source: KIS_KR_DAILY | KIS_US_DAILY | UPBIT_DAY | FUND_NAV
+        - source: KIS_KR_DAILY | KIS_US_DAILY | UPBIT_DAY
         - products: 해당 소스의 market.product 행
         - windows: plan 결과 (같은 소스)
         - deps: Deps (engine, tokens, secrets, app)
-        - interval: 업비트·KOFIA 호출 간격 초 (KIS 는 클라이언트가 유지)
+        - interval: 업비트 호출 간격 초 (KIS 는 클라이언트가 유지)
     Input: 소스 API, 업무 DB
-    Output: {"rows": 시세=upsert 요청 행 / 펀드=실제 INSERT 행, "products": 처리 수, "failed": {code: 사유}} (+ DB 쓰기)
+    Output: {"rows": upsert 요청 행, "products": 처리 수, "failed": {code: 사유}} (+ DB 쓰기)
     """
     from asset_flow import db_manager as db
-    from asset_flow.transformers.price_transformer import kst_day_ohlc, to_fund_frame, to_price_frame
-
-    from asset_flow.pipeline.fund_nav import fetch_all
+    from asset_flow.transformers.price_transformer import kst_day_ohlc, to_price_frame
 
     fetch = _fetcher(source, deps)
     by_code = {p["product_code"]: p for p in products}
-    # KOFIA 조회만 병렬로 먼저 (응답 지연 대비), 적재는 아래에서 상품 단위로
-    pre = fetch_all(lambda w: fetch(by_code[w.product_code], w.start, w.end, interval), windows) \
-        if source == "FUND_NAV" else None
     rows, failed = 0, {}
     for w in windows:
         p = by_code[w.product_code]
         try:
-            raw = pre[w] if pre is not None else fetch(p, w.start, w.end, interval)
-            if isinstance(raw, Exception):
-                raise raw
-            if source == "FUND_NAV":
-                df = to_fund_frame(raw, p["product_code"], p["product_name"], w.end)
-                n = db.insert_missing_fund_prices(deps.engine, df.to_dict("records"))
-            else:
-                if source == "UPBIT_DAY":
-                    raw = kst_day_ohlc(raw)
-                df = to_price_frame(source, raw, p["product_code"], p["currency_code"], w.end)
-                validate_coverage(p, w, df)
-                n = db.upsert_product_prices(deps.engine, df.to_dict("records"))
+            raw = fetch(p, w.start, w.end, interval)
+            if source == "UPBIT_DAY":
+                raw = kst_day_ohlc(raw)
+            df = to_price_frame(source, raw, p["product_code"], p["currency_code"], w.end)
+            validate_coverage(p, w, df)
+            n = db.upsert_product_prices(deps.engine, df.to_dict("records"))
             if w.is_new:
                 first = df["standard_date"].min() if len(df) else (date.fromisoformat(w.end) + timedelta(days=1)).isoformat()
                 db.set_price_from_date(deps.engine, p["product_code"], first)
@@ -321,9 +274,4 @@ def _fetcher(source: str, deps):
 
         upbit = UpbitApiClient("", "")                         # 공개 엔드포인트만 사용
         return lambda p, s, e, i: upbit.get_hour_candles(p["source_symbol"], s, e, i)
-    if source == "FUND_NAV":
-        from asset_flow.clients.kofia_client import KofiaClient
-
-        kofia = KofiaClient()
-        return lambda p, s, e, i: kofia.get_fund_nav_history(p["source_symbol"], ymd(s), ymd(e), i)
     raise ValueError(f"알 수 없는 price_source: {source}")

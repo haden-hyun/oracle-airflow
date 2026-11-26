@@ -39,7 +39,6 @@ def test_asset_names_match_config_tables(app):
     ("account_ingest_dividend", "DIVIDEND_RECEIPT", "estimate_us_receipts"),
     ("market_ingest_product_price_daily", "PRODUCT", "upsert_products"),
     ("market_ingest_product_price_daily", "PRODUCT_PRICE", "ingest_prices"),
-    ("market_ingest_product_price_daily", "FUND_PRICE", "ingest_fund_nav"),
 ])
 def test_writer_task_declares_outlet_and_marks(dag_file, asset, task_id):
     # 쓰기 태스크마다 outlets 선언 + 이벤트 메모 첨부
@@ -101,7 +100,6 @@ def test_groups_sources_and_mvs():
     ("market_ingest_product_price_daily", "wait_for_asset_daily", {"account.asset_daily"}),
     ("market_ingest_product_price_daily", "upsert_products", {"account.asset_daily"}),
     ("market_ingest_product_price_daily", "ingest_prices", {"source.kis", "source.upbit"}),
-    ("market_ingest_product_price_daily", "ingest_fund_nav", {"source.kofia"}),
     ("account_ingest_dividend", "list_targets", {"market.product", "account.asset_daily"}),
     ("account_ingest_dividend", "ingest_kr_events", {"source.kis", "market.trading_holiday"}),
     ("account_ingest_dividend", "ingest_us_events", {"source.kis"}),

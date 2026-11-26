@@ -76,3 +76,10 @@
 - 삭제: `compare_with_fundguide` 태스크 · `collect_fund_prices` 크롤러 대체 경로 · `plugins/asset_flow/crawler/` · `compare_sources` · `SOURCE_FUNDGUIDE` · config `funds.crawler_fallback`·`shadow_compare` · Playwright(requirements·Dockerfile Chromium 단계)
 - 보충 알림 재계산 안내: min~max 한 범위 → 연속 구간별 (최근 5구간 + 외 n구간) — 흩어진 빈 날에 1년 전체 재계산을 안내하지 않게
 - 배포: plugins·config 같은 커밋 → 재시작, 이미지 재빌드 (Playwright 제거)
+
+## 2026-11-26 — 관찰 기간 단축, 정리 3건 (사용자 결정)
+
+- 시세 DAG FUND_NAV 경로 삭제: `ingest_fund_nav` · `price_plan` FUND_NAV 분기·머리 갭·`fund_window_needed` · `to_fund_frame` · `price_ingest.fund_nav_enabled`
+  - `fund_price_daily` 쓰기는 06:55 `fund_price` 그룹(T-1 + `fill_nav_gaps`)만, 상품 분류값 `price_source='FUND_NAV'` 은 유지
+- 백업 DROP: `market.product_price_daily_upbit_bak_20261125`(808행) · `account.asset_daily_crypto_bak_20261125`(590행) · `account.asset_daily_cma_bak_20261126`(177행)
+  - 삭제 전 확인: UPBIT_DAY ppd 818행, CRYPTO asset_daily 600행 가격 불일치 0, CMA 행 0

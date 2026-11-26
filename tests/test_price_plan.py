@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from asset_flow.pipeline.price_plan import (Window, fund_window_needed, plan_product, plan_window, recent_start,
+from asset_flow.pipeline.price_plan import (Window, plan_product, plan_window, recent_start,
                                             stale_products, validate_coverage)
 
 HOL = {"KR": {date(2026, 10, 5), date(2026, 10, 9)}, "US": set()}
@@ -53,15 +53,6 @@ def test_zero_row_marker_skips_until_new_dates():
     assert (w.start, w.end) == ("2026-10-13", "2026-10-13")
 
 
-def test_fund_head_gap_requests_full_window():
-    fund = _p(product_code="K553W5E17401", market="FUND", price_source="FUND_NAV",
-              first_loaded=date(2026, 1, 28), last_loaded=date(2026, 10, 12))
-    w = plan_product(fund, BASE, HOL, 365, 5, {})
-    assert (w.start, w.is_new) == ("2025-10-13", True)
-    filled = dict(fund, first_loaded=date(2025, 10, 13))
-    assert plan_product(filled, BASE, HOL, 365, 5, {}).start == "2026-10-02"     # 머리 채워진 뒤 = 증분
-
-
 def test_manual_params_override_window():
     p = _p(last_loaded=date(2026, 10, 12))
     w = plan_product(p, BASE, HOL, 365, 5, {"start_date": "2026-03-01", "end_date": "2026-03-31"})
@@ -98,16 +89,3 @@ def test_stale_products():
 def test_crypto_stale_has_no_extra_day():
     btc = _p(product_code="BTC", market="CRYPTO", price_source="UPBIT_DAY", last_loaded=date(2026, 10, 9))
     assert stale_products([btc], date(2026, 10, 12), HOL) == ["BTC(2026-10-09)"]       # 기대 = T-1 − 2일
-
-
-def test_fund_window_skipped_when_no_trading_day_missing():
-    w = Window("K553W5E17401", "2026-10-02", "2026-10-12", False)
-    full = {date(2026, 10, d) for d in range(2, 13)}
-    assert not fund_window_needed(w, full, HOL["KR"])
-    weekdays_only = full - {date(2026, 10, 3), date(2026, 10, 4), date(2026, 10, 5), date(2026, 10, 9)}
-    assert not fund_window_needed(w, weekdays_only, HOL["KR"])         # 주말·KR 휴장일 빈 칸은 KOFIA 로 못 채움
-    assert fund_window_needed(w, full - {date(2026, 10, 8)}, HOL["KR"])  # 평일 빈 날 → 수집
-
-
-def test_fund_window_new_is_always_needed():
-    assert fund_window_needed(Window("K553W5E17401", "2025-10-13", "2026-10-12", True), set(), HOL["KR"])

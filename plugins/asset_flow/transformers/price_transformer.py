@@ -1,9 +1,8 @@
 """
-일봉·기준가 원시 응답 → 적재 레코드 (순수 함수)
+일봉 원시 응답 → 적재 레코드 (순수 함수)
 
 - kst_day_ohlc(rows, now): 업비트 60분봉 → KST 일별 OHLCV (종가 = 자정 직전 체결가, 마감된 날만)
 - to_price_frame(source, rows, product_code, currency, end): KIS 국내·해외, 업비트(kst_day_ohlc 결과) → PRICE_COLUMNS
-- to_fund_frame(rows, product_code, product_name, end): KOFIA → FUND_PRICE_COLUMNS
 - 공통: end 이후(장중·당일) 행 제거, 종가 0 이하 제거, 날짜 중복 제거
 """
 
@@ -14,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 
-from asset_flow.config.schemas import FUND_PRICE_COLUMNS, PRICE_COLUMNS, PRICE_RENAME
+from asset_flow.config.schemas import PRICE_COLUMNS, PRICE_RENAME
 
 log = logging.getLogger(__name__)
 
@@ -77,24 +76,3 @@ def to_price_frame(source: str, rows: list[dict], product_code: str, currency: s
     df = df.assign(product_code=product_code, currency_code=currency, source=source)
     df = df[(df["standard_date"] <= end) & (df["closing_price"] > 0)]
     return df.drop_duplicates("standard_date").sort_values("standard_date")[PRICE_COLUMNS].reset_index(drop=True)
-
-
-def to_fund_frame(rows: list[dict], product_code: str, product_name: str, end: str) -> pd.DataFrame:
-    """
-    Purpose: KOFIA 기준가 이력 → fund_price_daily 레코드
-    Parameter:
-        - rows: get_fund_nav_history 결과
-        - product_code: 펀드 표준코드
-        - product_name: 표시명 (market.product)
-        - end: 적재 상한일 YYYY-MM-DD (당일 공시분 제거)
-    Input: 없음
-    Output: FUND_PRICE_COLUMNS DataFrame (기준가 0 이하 제거)
-    """
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return pd.DataFrame(columns=FUND_PRICE_COLUMNS)
-    df["standard_date"] = pd.to_datetime(df["standard_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
-    df["standard_price"] = pd.to_numeric(df["standard_price"], errors="coerce")
-    df = df.assign(product_code=product_code, product_name=product_name)
-    df = df[(df["standard_date"] <= end) & (df["standard_price"] > 0)]
-    return df.drop_duplicates("standard_date").sort_values("standard_date")[FUND_PRICE_COLUMNS].reset_index(drop=True)

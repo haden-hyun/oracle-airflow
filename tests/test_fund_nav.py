@@ -137,38 +137,6 @@ def test_fetch_all_runs_concurrently_and_isolates_errors():
     assert fetch_all(fetch, []) == {}
 
 
-def test_ingest_fund_nav_fetches_in_parallel(monkeypatch):
-    import threading
-    from types import SimpleNamespace
-
-    from asset_flow import db_manager as db
-    from asset_flow.pipeline import price_plan
-    from asset_flow.pipeline.price_plan import Window, ingest_source
-
-    gate = threading.Barrier(2, timeout=5)
-
-    def fetch(p, s, e, i):
-        """
-        Purpose: KOFIA 조회 대역 (2개가 동시에 들어와야 통과, B 는 실패)
-        Parameter:
-            - p / s / e / i: 상품 · 시작 · 끝 · 간격
-        Input: 없음
-        Output: 기준가 행
-        """
-        gate.wait()
-        if p["product_code"] == "B":
-            raise ConnectionError("down")
-        return [{"standard_date": "20261016", "standard_price": "1692.99"}]
-
-    inserted = []
-    monkeypatch.setattr(price_plan, "_fetcher", lambda source, deps: fetch)
-    monkeypatch.setattr(db, "insert_missing_fund_prices", lambda engine, recs: inserted.extend(recs) or len(recs))
-    products = [{"product_code": c, "product_name": c} for c in ("A", "B")]
-    windows = [Window(c, "2026-10-12", "2026-10-17", False) for c in ("A", "B")]
-    res = ingest_source("FUND_NAV", products, windows, SimpleNamespace(engine=None), 0)
-    assert res["rows"] == 1 and list(res["failed"]) == ["B"] and inserted[0]["product_code"] == "A"
-
-
 def _rows(*pairs):
     """
     Purpose: KOFIA 응답 행 생성

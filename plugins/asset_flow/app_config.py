@@ -66,8 +66,7 @@ class PriceIngest(_Strict):
     lookback_days: int = Field(ge=30, le=3650)          # 신규·재매수 백필 한도
     refetch_trading_days: int = Field(ge=1, le=30)      # 매일 재수집 거래일 수
     tracked_after_sale_days: int = Field(ge=0, le=365)  # 매도 후 추적 일수
-    request_interval_sec: float = Field(ge=0.1, le=5)   # 업비트·KOFIA 호출 간격
-    fund_nav_enabled: bool = False                      # KOFIA 펀드 기준가 보충 스위치
+    request_interval_sec: float = Field(ge=0.1, le=5)   # 업비트 호출 간격
 
 
 class DividendWindows(_Strict):

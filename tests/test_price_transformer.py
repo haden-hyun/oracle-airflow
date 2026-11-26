@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from asset_flow.clients.kofia_client import KofiaClient
-from asset_flow.config.schemas import FUND_PRICE_COLUMNS, PRICE_COLUMNS
-from asset_flow.transformers.price_transformer import kst_day_ohlc, to_fund_frame, to_price_frame
+from asset_flow.config.schemas import PRICE_COLUMNS
+from asset_flow.transformers.price_transformer import kst_day_ohlc, to_price_frame
 
 KR_ROWS = [{"stck_bsop_date": "20261013", "stck_clpr": "4185", "stck_oprc": "4205", "stck_hgpr": "4205",
             "stck_lwpr": "4150", "acml_vol": "1040128"},
@@ -92,18 +92,8 @@ def test_upbit_day_frame():
         "source": "UPBIT_DAY"}]
 
 
-def test_fund_frame_drops_today_and_nonpositive():
-    rows = [{"standard_date": "20261013", "standard_price": "1755.96"},
-            {"standard_date": "20261012", "standard_price": "1750.00"},
-            {"standard_date": "20261008", "standard_price": "0"}]
-    df = to_fund_frame(rows, "K55105D43299", "TDF2055", "2026-10-12")
-    assert df.to_dict("records") == [{"standard_date": "2026-10-12", "product_code": "K55105D43299",
-                                      "product_name": "TDF2055", "standard_price": 1750.0}]
-
-
 def test_empty_inputs_keep_columns():
     assert list(to_price_frame("KIS_KR_DAILY", [], "X", "KRW", "2026-10-12").columns) == PRICE_COLUMNS
-    assert list(to_fund_frame([], "X", "Y", "2026-10-12").columns) == FUND_PRICE_COLUMNS
 
 
 def test_kofia_parses_only_requested_code(monkeypatch):
@@ -121,8 +111,7 @@ def test_price_dag_structure():
     from test_finalize import _load_dag
 
     t = _load_dag("market_ingest_product_price_daily").task_dict
-    assert t["fail_if_upstream_failed"].upstream_task_ids == {"ingest_prices", "ingest_fund_nav",
-                                                              "check_tracked_coverage"}
+    assert t["fail_if_upstream_failed"].upstream_task_ids == {"ingest_prices", "check_tracked_coverage"}
     assert t["check_tracked_coverage"].trigger_rule == "all_done"
     assert t["upsert_products"].upstream_task_ids == {"get_dates", "wait_for_token", "wait_for_asset_daily"}
     assert t["wait_for_asset_daily"].timeout == 1800

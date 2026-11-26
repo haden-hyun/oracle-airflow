@@ -3,7 +3,7 @@
 
 - asset_daily 비현금 상품 → market.product upsert (is_tracked = 보유 중 또는 매도 후 n일, config)
 - 창: min(마지막 적재일+1, 최근 5거래일 시작) ~ T-1, 신규면 T-365 ~ T-1
-- 소스: KIS 국내(FHKST03010100)·미국(HHDFS76240000) 원주가, 업비트 60분봉 → KST 일봉(종가 = 자정 직전), KOFIA 펀드 기준가(스위치, 빈 날짜만)
+- 소스: KIS 국내(FHKST03010100)·미국(HHDFS76240000) 원주가, 업비트 60분봉 → KST 일봉(종가 = 자정 직전)
 - 선행: 토큰·T-1 asset_daily 데이터 센서 / 늦은 run skip 없음 (이력 API — 과거를 덮지 않음) / 토큰 발급 안 함
 """
 
@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from airflow.sdk import Param, dag, get_current_context, task
 
 from alerts import discord_failure_callback, discord_recovery_callback
-from asset_flow.assets import (ASSET_DAILY, FUND_PRICE, PRODUCT, PRODUCT_PRICE, SOURCE_KIS, SOURCE_KOFIA, SOURCE_UPBIT,
+from asset_flow.assets import (ASSET_DAILY, PRODUCT, PRODUCT_PRICE, SOURCE_KIS, SOURCE_UPBIT,
                                TRADING_HOLIDAY, mark)
 from asset_flow.finalize import fail_if_upstream_failed
 from asset_flow.runtime import KST, kst_run_end
@@ -21,7 +21,7 @@ PRICE_SOURCES = ["KIS_KR_DAILY", "KIS_US_DAILY", "UPBIT_DAY"]
 
 DAG_DOC = """
 ### 목적
-보유 이력이 있는 상품의 일봉을 1년치 유지한다 (`market.product_price_daily`, 펀드는 `market.fund_price_daily` 빈 날짜).
+보유 이력이 있는 상품의 일봉을 1년치 유지한다 (`market.product_price_daily`, 펀드 기준가는 06:55 `market_ingest_reference_daily`).
 
 | Task | 내용 |
 |---|---|
@@ -30,7 +30,6 @@ DAG_DOC = """
 | `upsert_products` | asset_daily → `market.product` (이름·보유구간·is_tracked) |
 | `plan_fetch` | 상품별 수집 창 (신규 1년, 증분, 최근 5거래일 재수집, 재매수 최대 1년 · 펀드는 빈 거래일 있을 때만) |
 | `ingest_prices` (소스별) | 수집 → 원주가 upsert (상품 단위 격리, 실패 상품이 있으면 마지막에 실패) |
-| `ingest_fund_nav` | KOFIA 기준가 → fund_price_daily 빈 날짜만 (창에 빈 거래일이 있을 때만 호출 — 평소엔 06:55 가 채워 0회. config `price_ingest.fund_nav_enabled=false` 면 skip) |
 | `check_tracked_coverage` | 추적 종목이 3거래일 넘게 뒤처지면 실패·알림 |
 | `fail_if_upstream_failed` | 앞 단계 실패가 있으면 run 실패 (마지막 점검 성공이 실패를 가리지 않게) |
 
@@ -160,29 +159,6 @@ def market_ingest_product_price_daily():
             raise RuntimeError(f"[{source}] 실패 {len(res['failed'])}개: {res['failed']}")
         return res
 
-    @task(task_id="ingest_fund_nav", inlets=[SOURCE_KOFIA], outlets=[FUND_PRICE])
-    def ingest_fund_nav(plan: dict, dates: dict) -> dict:
-        """
-        Purpose: KOFIA 기준가 → fund_price_daily 빈 날짜만 (기존 행 불변)
-        Parameter:
-            - plan: plan_fetch 결과
-            - dates: get_dates 결과
-        Input: config price_ingest.fund_nav_enabled, dis.kofia.or.kr, 업무 DB
-        Output: {"rows","products","failed"} (+ DB INSERT). 스위치 off 면 skip, 실패 펀드가 있으면 RuntimeError
-        """
-        from airflow.sdk.exceptions import AirflowSkipException
-
-        from asset_flow.app_config import load_app_config
-        from asset_flow.pipeline.price_plan import run_source
-
-        if not load_app_config().price_ingest.fund_nav_enabled:
-            raise AirflowSkipException("price_ingest.fund_nav_enabled=false")
-        res = run_source("FUND_NAV", plan.get("FUND_NAV", []))
-        mark(FUND_PRICE, data_date=dates["end"], rows=res["rows"], source="KOFIA", end=dates["end"])
-        if res["failed"]:
-            raise RuntimeError(f"[FUND_NAV] 실패: {res['failed']}")
-        return res
-
     @task(task_id="check_tracked_coverage", inlets=[TRADING_HOLIDAY], retries=0, trigger_rule="all_done")
     def check_tracked_coverage(dates: dict) -> None:
         """
@@ -200,7 +176,7 @@ def market_ingest_product_price_daily():
     dates = get_dates()
     plan = plan_fetch(dates)
     [wait_for_token(), wait_for_asset_daily(dates)] >> upsert_products(dates) >> plan
-    done = [ingest_prices.partial(plan=plan, dates=dates).expand(source=PRICE_SOURCES), ingest_fund_nav(plan, dates)]
+    done = [ingest_prices.partial(plan=plan, dates=dates).expand(source=PRICE_SOURCES)]
     check = check_tracked_coverage(dates)
     done >> check
     [*done, check] >> fail_if_upstream_failed()

@@ -33,8 +33,7 @@ price_ingest:                                # market_ingest_product_price_daily
   lookback_days: 365                         # 신규·재매수 시 최대 이만큼 거슬러 받음
   refetch_trading_days: 5                    # 매일 최근 n 거래일 재수집 (정정·누락)
   tracked_after_sale_days: 30                # 매도 후 n 일까지 is_tracked
-  request_interval_sec: 0.35                 # 업비트·KOFIA 호출 간격 (KIS 는 KIS.REQUEST_INTERVAL)
-  fund_nav_enabled: false                    # 시세 DAG ingest_fund_nav (구 보충 경로) — 06:55 fund_price.fill_nav_gaps 로 이관, 관찰 후 삭제
+  request_interval_sec: 0.35                 # 업비트 호출 간격 (KIS 는 KIS.REQUEST_INTERVAL)
 
 dividend:                                    # account_ingest_dividend (매일 07:20)
   windows:                                   # 기준 = run 의 KST 날짜(T), 단위 일
